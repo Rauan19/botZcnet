@@ -25,13 +25,19 @@ class WhatsAppBot {
     setupEventListeners() {
         // QR Code para autenticação
         this.client.on('qr', (qr) => {
-            // QR Code gerado
+            console.log('\n📱 ===== QR CODE PARA CONEXÃO =====');
+            console.log('📱 Escaneie o QR Code abaixo com seu WhatsApp:');
+            console.log('');
             qrcode.generate(qr, {small: true});
+            console.log('');
+            console.log('📱 ================================');
+            console.log('📱 QR Code gerado! Escaneie com seu WhatsApp para conectar!');
+            console.log('📱 ================================\n');
         });
 
         // Bot pronto
         this.client.on('ready', () => {
-            // Bot conectado
+            console.log('✅ Bot WhatsApp conectado com sucesso!');
         });
 
         // Erro de autenticação
@@ -616,9 +622,10 @@ Cliente encontrado, mas não foi possível extrair o código PIX da resposta da 
 
     async start() {
         try {
+            console.log('🔄 Iniciando bot WhatsApp...');
             await this.client.initialize();
         } catch (error) {
-            // Erro silencioso para produção
+            console.error('❌ Erro ao iniciar bot:', error);
         }
     }
 
