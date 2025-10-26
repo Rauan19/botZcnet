@@ -12,8 +12,15 @@ class WhatsAppBot {
                 clientId: "whatsapp-boleto-bot"
             }),
             puppeteer: {
-                headless: true,
-                args: ['--no-sandbox', '--disable-setuid-sandbox']
+                   headless: true,
+                executablePath: '/usr/bin/chromium-browser', // <-- adicione isso
+        args: [
+            '--no-sandbox',
+            '--disable-setuid-sandbox',
+            '--disable-dev-shm-usage',
+            '--disable-gpu',
+            '--single-process'
+        ]
             }
         });
 
@@ -33,7 +40,7 @@ class WhatsAppBot {
             console.log('📱 ================================');
             console.log('📱 QR Code gerado! Escaneie com seu WhatsApp para conectar!');
             console.log('📱 ================================\n');
-        });
+ whatsappBot.js        });
 
         // Bot pronto
         this.client.on('ready', () => {
