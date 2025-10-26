@@ -52,8 +52,49 @@ class WhatsAppBot {
 
         // Mensagem recebida
         this.client.on('message', async (message) => {
-            await this.handleMessage(message);
+            // Só responde se for mensagem de pagamento/boleto
+            if (this.isPaymentRelated(message.body)) {
+                await this.handleMessage(message);
+            }
         });
+    }
+
+    /**
+     * Verifica se a mensagem é relacionada a pagamento/boleto
+     */
+    isPaymentRelated(messageText) {
+        if (!messageText) return false;
+        
+        const paymentKeywords = [
+            'pagamento', 'boleto', 'pix', 'cobrança', 'fatura', 'conta',
+            'pagar', 'vencimento', 'valor', 'dinheiro', 'transferência',
+            'depósito', 'recibo', 'nota', 'comprovante', 'quitar',
+            'saldo', 'devedor', 'em aberto', 'pendente', 'atrasado',
+            '1', '2', '3' // Números do menu
+        ];
+        
+        const message = messageText.toLowerCase();
+        return paymentKeywords.some(keyword => message.includes(keyword));
+    }
+
+    /**
+     * Verifica se é atendente humano (para pausar o bot)
+     */
+    isHumanAttendant(messageText) {
+        if (!messageText) return false;
+        
+        const attendantKeywords = [
+            'atendente humano', 'falar com atendente', 'quero atendente',
+            'transferir para atendente', 'atendimento humano'
+        ];
+        
+        const message = messageText.toLowerCase();
+        
+        // Se mensagem for muito longa (provavelmente humano)
+        if (messageText.length > 200) return true;
+        
+        // Se contém frases específicas de atendente
+        return attendantKeywords.some(keyword => message.includes(keyword));
     }
 
     async handleMessage(message) {
@@ -63,10 +104,31 @@ class WhatsAppBot {
             
             // Ignora mensagens do próprio bot
             if (message.fromMe) return;
+            
+            // Para se atendente humano responder (mensagens longas ou com "atendente", "suporte", etc.)
+            if (this.isHumanAttendant(message.body)) {
+                console.log('🤖 Bot pausado - Atendente humano assumiu a conversa');
+                return;
+            }
 
             const messageText = message.body.trim();
             const contactName = contact.name || contact.pushname || 'Usuário';
             const contactId = contact.id._serialized;
+
+            // Comando INICIO - Voltar ao menu principal (funciona sempre, em qualquer momento)
+            if (messageText.toLowerCase() === 'inicio' || messageText.toLowerCase() === 'menu' || messageText.toLowerCase() === 'voltar') {
+                this.userStates.delete(contactId);
+                await chat.sendMessage(`🤖 *MENU PRINCIPAL - ZCNET*
+
+*O QUE VOCÊ GOSTARIA DE FAZER?*
+
+💰 *PAGAMENTOS* - Digite *pagamentos*
+❓ *DÚVIDAS* - Como usar o bot
+🚪 *SAIR* - Encerrar atendimento
+
+*DIGITE O NÚMERO DA OPÇÃO DESEJADA:*`);
+                return;
+            }
 
             // Comando de ajuda
             if (messageText.toLowerCase() === '!help' || messageText.toLowerCase() === '!ajuda') {
@@ -76,148 +138,177 @@ class WhatsAppBot {
 
             // Comando !menu - Menu interativo
             if (messageText.toLowerCase() === '!menu') {
-                await chat.sendMessage(`🤖 *Menu Principal - ZcNet*
+                await chat.sendMessage(`🤖 *MENU PRINCIPAL - ZCNET*
 
-*Escolha uma opção:*
+*ESCOLHA UMA OPÇÃO:*
 
-📄 *Ver boleto* - Digite *boleto*
-💬 *Falar com suporte* - Digite *suporte*
-📅 *Agendar horário* - Digite *agendar*
+📄 *VER BOLETO* - Digite *boleto*
+💬 *FALAR COM SUPORTE* - Digite *suporte*
+📅 *AGENDAR HORÁRIO* - Digite *agendar*
 
-💡 *Dica:* Digite a palavra-chave para acessar cada opção.`);
+🚪 *SAIR DO ATENDIMENTO* - Digite *SAIR*
+
+💡 *DICA:* Digite a palavra-chave para acessar cada opção.`);
                 return;
             }
 
             // Comando !lista - Menu em lista
             if (messageText.toLowerCase() === '!lista') {
-                await chat.sendMessage(`🤖 *ZcNet - Menu Principal*
+                await chat.sendMessage(`🤖 *ZCNET - MENU PRINCIPAL*
 
-*Selecione uma opção:*
+*SELECIONE UMA OPÇÃO:*
 
-💳 *FINANCEIRO*
-📄 *Ver boleto* - Digite *boleto*
-💳 *Pagamentos pendentes* - Digite *pagamentos*
+💰 *FINANCEIRO*
+📄 *VER BOLETO* - Digite *boleto*
+💰 *PAGAMENTOS PENDENTES* - Digite *pagamentos*
 
 🆘 *SUPORTE*
-💬 *Falar com suporte* - Digite *suporte*
-📞 *Solicitar ligação* - Digite *ligacao*
+💬 *FALAR COM SUPORTE* - Digite *suporte*
+📞 *SOLICITAR LIGAÇÃO* - Digite *ligacao*
 
-💡 *Dica:* Digite a palavra-chave para acessar cada opção.`);
+🚪 *SAIR DO ATENDIMENTO* - Digite *SAIR*
+
+💡 *DICA:* Digite a palavra-chave para acessar cada opção.`);
                 return;
             }
 
-            // Voltar ao menu principal
-            if (messageText.toLowerCase() === 'menu' || messageText.toLowerCase() === 'voltar') {
-                this.userStates.delete(contactId);
-                await chat.sendMessage(`🤖 *Menu Principal - ZcNet*
-
-*O que você gostaria de fazer?*
-
-💳 *Pagamentos* - Digite *pagamentos*
-📊 *Relatórios* - Digite *relatorios*
-❓ *Ajuda* - Digite *ajuda*
-
-💡 *Dica:* Digite a palavra-chave ou use os comandos:
-• *!menu* - Menu interativo
-• *!lista* - Menu em lista
-• *!help* - Ajuda completa`);
-                return;
-            }
 
             // Tratamento de respostas por palavras-chave
-            if (messageText.toLowerCase() === 'pagamentos' || messageText.toLowerCase() === 'pagar') {
+            if (messageText.toLowerCase().includes('pagamentos') || messageText.toLowerCase().includes('pagar') || messageText.toLowerCase().includes('cobrança') || messageText.toLowerCase().includes('cobranca')) {
                 this.userStates.set(contactId, 'waiting_cpf');
-                await chat.sendMessage(`💳 *Pagamentos ZcNet*
+                await chat.sendMessage(`💰 *PAGAMENTOS ZCNET*
 
 Para buscar seus pagamentos, me envie seu *CPF* (11 dígitos).
 
 Exemplo: *12345678901*
 
-💡 *Dica:* Digite apenas os números do CPF, sem pontos ou traços.
+💡 *DICA:* Digite apenas os números do CPF, sem pontos ou traços.
 
-*Para voltar ao início, digite: oi*`);
+🚪 *SAIR DO ATENDIMENTO* - Digite *SAIR*
+
+*PARA VOLTAR AO INÍCIO, DIGITE: INICIO*`);
                 return;
             }
 
-            if (messageText.toLowerCase() === 'relatorios' || messageText.toLowerCase() === 'relatório') {
+            if (messageText.toLowerCase().includes('relatorios') || messageText.toLowerCase().includes('relatório')) {
                 this.userStates.set(contactId, 'waiting_cpf_reports');
-                await chat.sendMessage(`📊 *Meus Relatórios ZcNet*
+                await chat.sendMessage(`📊 *MEUS RELATÓRIOS ZCNET*
 
 Para ver seus relatórios de uso, me envie seu *CPF* (11 dígitos).
 
 Exemplo: *12345678901*
 
-💡 *Dica:* Digite apenas os números do CPF, sem pontos ou traços.
+💡 *DICA:* Digite apenas os números do CPF, sem pontos ou traços.
 
-*Para voltar ao início, digite: oi*`);
+🚪 *SAIR DO ATENDIMENTO* - Digite *SAIR*
+
+*PARA VOLTAR AO INÍCIO, DIGITE: INICIO*`);
                 return;
             }
 
-            if (messageText.toLowerCase() === 'ajuda' || messageText.toLowerCase() === 'help') {
+            if (messageText.toLowerCase().includes('ajuda') || messageText.toLowerCase().includes('help')) {
                 await this.sendHelpMessage(chat);
                 return;
             }
 
-            if (messageText.toLowerCase() === 'boleto') {
+            // Comando SAIR
+            if (messageText.toLowerCase().includes('sair')) {
+                this.userStates.delete(contactId);
+                await chat.sendMessage(`👋 *OBRIGADO POR USAR O ZCNET!*
+
+*ATENDIMENTO FINALIZADO*
+
+Se precisar de ajuda novamente, é só digitar *INICIO* ou *MENU*.
+
+🙏 *DEUS ABENÇOE SEU DIA!* ✨`);
+                return;
+            }
+
+
+            if (messageText.toLowerCase().includes('boleto') || messageText.toLowerCase().includes('fatura')) {
                 this.userStates.set(contactId, 'waiting_cpf');
-                await chat.sendMessage(`💳 *Ver Boleto ZcNet*
+                await chat.sendMessage(`💰 *VER BOLETO ZCNET*
 
 Para buscar seu boleto, me envie seu *CPF* (11 dígitos).
 
 Exemplo: *12345678901*
 
-💡 *Dica:* Digite apenas os números do CPF, sem pontos ou traços.
+💡 *DICA:* Digite apenas os números do CPF, sem pontos ou traços.
 
-*Para voltar ao início, digite: oi*`);
+🚪 *SAIR DO ATENDIMENTO* - Digite *SAIR*
+
+*PARA VOLTAR AO INÍCIO, DIGITE: INICIO*`);
                 return;
             }
 
-            if (messageText.toLowerCase() === 'suporte') {
-                await chat.sendMessage(`🆘 *Suporte ZcNet*
+            if (messageText.toLowerCase().includes('pix') || messageText.toLowerCase().includes('internet')) {
+                this.userStates.set(contactId, 'waiting_cpf');
+                await chat.sendMessage(`📱 *PIX ZCNET*
+
+Para gerar seu PIX, me envie seu *CPF* (11 dígitos).
+
+Exemplo: *12345678901*
+
+💡 *DICA:* Digite apenas os números do CPF, sem pontos ou traços.
+
+🚪 *SAIR DO ATENDIMENTO* - Digite *SAIR*
+
+*PARA VOLTAR AO INÍCIO, DIGITE: INICIO*`);
+                return;
+            }
+
+            if (messageText.toLowerCase().includes('suporte')) {
+                await chat.sendMessage(`🆘 *SUPORTE ZCNET*
 
 Para falar com nosso suporte, entre em contato:
 
-📞 *Telefone:* (11) 99999-9999
-📧 *Email:* suporte@zcnet.com.br
-🌐 *Site:* www.zcnet.com.br
+📞 *TELEFONE:* (11) 99999-9999
+📧 *EMAIL:* suporte@zcnet.com.br
+🌐 *SITE:* www.zcnet.com.br
 
-⏰ *Horário de atendimento:*
+⏰ *HORÁRIO DE ATENDIMENTO:*
 Segunda a Sexta: 8h às 18h
 Sábado: 8h às 12h
 
-*Para voltar ao início, digite: oi*`);
+🚪 *SAIR DO ATENDIMENTO* - Digite *SAIR*
+
+*PARA VOLTAR AO INÍCIO, DIGITE: INICIO*`);
                 return;
             }
 
-            if (messageText.toLowerCase() === 'agendar') {
-                await chat.sendMessage(`📅 *Agendar Horário*
+            if (messageText.toLowerCase().includes('agendar')) {
+                await chat.sendMessage(`📅 *AGENDAR HORÁRIO*
 
 Para agendar um horário de atendimento:
 
-📞 *Ligue:* (11) 99999-9999
-📧 *Email:* agendamento@zcnet.com.br
+📞 *LIGUE:* (11) 99999-9999
+📧 *EMAIL:* agendamento@zcnet.com.br
 
-⏰ *Horários disponíveis:*
+⏰ *HORÁRIOS DISPONÍVEIS:*
 Segunda a Sexta: 8h às 18h
 Sábado: 8h às 12h
 
-*Para voltar ao início, digite: oi*`);
+🚪 *SAIR DO ATENDIMENTO* - Digite *SAIR*
+
+*PARA VOLTAR AO INÍCIO, DIGITE: INICIO*`);
                 return;
             }
 
-            if (messageText.toLowerCase() === 'ligacao') {
-                await chat.sendMessage(`📞 *Solicitar Ligação*
+            if (messageText.toLowerCase().includes('ligacao') || messageText.toLowerCase().includes('ligação')) {
+                await chat.sendMessage(`📞 *SOLICITAR LIGAÇÃO*
 
 Para solicitar uma ligação de nosso suporte:
 
-📞 *Ligue:* (11) 99999-9999
-📧 *Email:* suporte@zcnet.com.br
+📞 *LIGUE:* (11) 99999-9999
+📧 *EMAIL:* suporte@zcnet.com.br
 
-⏰ *Horário de atendimento:*
+⏰ *HORÁRIO DE ATENDIMENTO:*
 Segunda a Sexta: 8h às 18h
 Sábado: 8h às 12h
 
-*Para voltar ao início, digite: oi*`);
+🚪 *SAIR DO ATENDIMENTO* - Digite *SAIR*
+
+*PARA VOLTAR AO INÍCIO, DIGITE: INICIO*`);
                 return;
             }
 
@@ -228,23 +319,28 @@ Sábado: 8h às 12h
             if (!userState) {
                 // Processa opções numéricas primeiro
                 if (messageText === '1') {
-                    await chat.sendMessage(`💳 *Pagamentos*
+                    await chat.sendMessage(`💰 *PAGAMENTOS*
 
 Para acessar seus boletos e PIX, preciso do seu CPF.
 
-Digite seu CPF (apenas números):`);
+*DIGITE SEU CPF (APENAS NÚMEROS):*
+
+🚪 *SAIR DO ATENDIMENTO* - Digite *SAIR*`);
                     this.userStates.set(contactId, 'waiting_cpf');
                     return;
                 }
 
                 if (messageText === '2') {
-                    await chat.sendMessage(`❓ *Como usar o bot ZcNet*
+                    await chat.sendMessage(`❓ *COMO USAR O BOT ZCNET*
 
-*Como navegar:*
+*COMO NAVEGAR:*
 
-🤖 *Iniciar:* Digite "oi" para começar
-💳 *Pagamentos:* Digite "1" e depois seu CPF
-❓ *Ajuda:* Digite "2" para ver esta tela
+🤖 *INICIAR:* Digite "inicio" para começar
+💰 *PAGAMENTOS:* Digite "1" e depois seu CPF
+❓ *AJUDA:* Digite "2" para ver esta tela
+🚪 *SAIR:* Digite "3" para encerrar
+
+🚪 *SAIR DO ATENDIMENTO* - Digite *SAIR*
 
 *Fluxo de pagamentos:*
 1️⃣ Digite "1" para acessar pagamentos
@@ -258,17 +354,29 @@ Digite seu CPF (apenas números):`);
                     return;
                 }
 
+                if (messageText === '3') {
+                    await chat.sendMessage(`🚪 *ATENDIMENTO ENCERRADO*
+
+Obrigado por usar o bot da *ZCNET*! 🌐
+
+Se precisar de ajuda novamente, envie qualquer mensagem e o bot retornará.
+
+🙏 *DEUS ABENÇOE SEU DIA!* ✨`);
+                    return;
+                }
+
                 // Se não for opção numérica, mostra menu inicial
                 await chat.sendMessage(`Olá! 👋
 
-Sou o assistente virtual da *ZcNet*! 🌐
+Sou o assistente virtual da *ZCNET*! 🌐
 
-*O que você gostaria de fazer?*
+*O QUE VOCÊ GOSTARIA DE FAZER?*
 
-*1* 💳 *Pagamentos* - Ver boletos e PIX
-*2* ❓ *Dúvidas* - Como usar o bot
+*1* 💰 *PAGAMENTOS* - Ver boletos e PIX
+*2* ❓ *DÚVIDAS* - Como usar o bot
+*3* 🚪 *SAIR* - Encerrar atendimento
 
-Digite o número da opção desejada:`);
+*DIGITE O NÚMERO DA OPÇÃO DESEJADA:*`);
                 return;
             }
 
@@ -289,28 +397,34 @@ Digite o número da opção desejada:`);
                         await chat.sendMessage(`✅ *Cliente encontrado:*
 📋 Nome: ${client.nome || 'Não informado'}
 
-💳 *Escolha a forma de pagamento:*
+💰 *ESCOLHA A FORMA DE PAGAMENTO:*
 
-*1* 📄 Boleto Bancário
-*2* 📱 PIX (Código Copia e Cola)
+*1* 📄 BOLETO BANCÁRIO
+*2* 📱 PIX (CÓDIGO COPIA E COLA)
 
-Digite o número da opção desejada:`);
+🚪 *SAIR DO ATENDIMENTO* - Digite *SAIR*
+
+*DIGITE O NÚMERO DA OPÇÃO DESEJADA:*`);
                     } catch (error) {
                         this.userStates.delete(contactId);
-                        await chat.sendMessage(`❌ Cliente não encontrado com este CPF.
+                        await chat.sendMessage(`❌ *CLIENTE NÃO ENCONTRADO COM ESTE CPF*
 
 Verifique se o CPF está correto e tente novamente.
 
-*Para voltar ao início, digite: oi*`);
+🚪 *SAIR DO ATENDIMENTO* - Digite *SAIR*
+
+*PARA VOLTAR AO INÍCIO, DIGITE: INICIO*`);
                     }
                 } else {
-                    await chat.sendMessage(`❌ CPF inválido.
+                    await chat.sendMessage(`❌ *CPF INVÁLIDO*
 
-Digite seu CPF com 11 dígitos (apenas números).
+*DIGITE SEU CPF COM 11 DÍGITOS (APENAS NÚMEROS)*
 
 Exemplo: *12345678901*
 
-*Para voltar ao início, digite: oi*`);
+🚪 *SAIR DO ATENDIMENTO* - Digite *SAIR*
+
+*PARA VOLTAR AO INÍCIO, DIGITE: INICIO*`);
                 }
                 return;
             }
@@ -326,11 +440,14 @@ Exemplo: *12345678901*
                     this.userStates.delete(contactId);
                     await this.generatePix(userState.cpf, chat);
                 } else {
-                    await chat.sendMessage(`❌ Opção inválida.
+                    await chat.sendMessage(`❌ *OPÇÃO INVÁLIDA*
 
-Digite *1* para Boleto ou *2* para PIX.
+*DIGITE:*
+*1* para BOLETO ou *2* para PIX
 
-*Para voltar ao início, digite: oi*`);
+🚪 *SAIR DO ATENDIMENTO* - Digite *SAIR*
+
+*PARA VOLTAR AO INÍCIO, DIGITE: INICIO*`);
                 }
                 return;
             }
@@ -373,7 +490,7 @@ CPF: ${cpf}
 
 🙏 *Deus abençoe seu dia!* ✨
 
-*Para voltar ao início, digite: oi*`
+*Para voltar ao início, digite: inicio*`
                 });
 
                 // Remove o arquivo após o envio
@@ -471,7 +588,21 @@ Tente novamente ou entre em contato com o suporte.`);
                 qrCodeImage = pixData.data.base64;
             } else if (pixData && pixData.base64) {
                 qrCodeImage = pixData.base64;
+            } else if (pixData && pixData.data && pixData.data.qrcode_image) {
+                qrCodeImage = pixData.data.qrcode_image;
+            } else if (pixData && pixData.qrcode_image) {
+                qrCodeImage = pixData.qrcode_image;
+            } else if (pixData && pixData.data && pixData.data.image) {
+                qrCodeImage = pixData.data.image;
+            } else if (pixData && pixData.image) {
+                qrCodeImage = pixData.image;
+            } else if (pixData && pixData.data && pixData.data.qr_code) {
+                qrCodeImage = pixData.data.qr_code;
+            } else if (pixData && pixData.qr_code) {
+                qrCodeImage = pixData.qr_code;
             }
+            
+            // Debug removido para produção
             
             // Envia dados do PIX
             if (pixCode) {
@@ -484,19 +615,51 @@ Tente novamente ou entre em contato com o suporte.`);
 2. Cole o código PIX
 3. Confirme o pagamento
 
-⏰ *Após o pagamento:*
-Sua internet será liberada em até 5 minutos. Se não liberar, ligue e desligue o roteador.
-
 ⬇️ *Código copia e cola do PIX abaixo* ⬇️
 
 🙏 *Deus abençoe seu dia!* ✨
 
-*Para voltar ao início, digite: oi*`;
+*Para voltar ao início, digite: inicio*`;
 
                 await chat.sendMessage(pixInfoMessage);
 
-                // Código PIX puro para facilitar a cópia
+                // Envia instruções primeiro
+                await chat.sendMessage(`📱 *Instruções para copiar:*
+1. Toque e segure AO LADO da mensagem do código PIX (não em cima)
+2. Selecione "Copiar" ou "Copy"
+3. Abra seu app bancário
+4. Cole o código PIX (remova "PIX: " se necessário)
+5. Confirme o pagamento
+
+⏰ *Após o pagamento:*
+Sua internet será liberada em até 5 minutos. Se não liberar, desligue e ligue os equipamentos.`);
+
+                // Envia código PIX sozinho em mensagem separada (sem link)
+                // Envia código PIX normal
                 await chat.sendMessage(pixCode);
+                
+                // Se tem QR Code como imagem, envia também
+                if (qrCodeImage) {
+                    try {
+                        // Remove o prefixo "data:image/png;base64," se existir
+                        let base64Data = qrCodeImage;
+                        if (qrCodeImage.startsWith('data:image/png;base64,')) {
+                            base64Data = qrCodeImage.replace('data:image/png;base64,', '');
+                        }
+                        
+                        const media = MessageMedia.fromBase64(base64Data, 'image/png', 'qrcode.png');
+                        await chat.sendMessage(media, {
+                            caption: `📱 *QR Code PIX*
+                            
+📱 *Como pagar:*
+1. Abra seu app bancário
+2. Escaneie o QR Code
+3. Confirme o pagamento`
+                        });
+                    } catch (error) {
+                        // Se der erro, continua normalmente
+                    }
+                }
             } else if (qrCodeImage) {
                 // Se tem QR Code como imagem, envia a imagem
                 try {
@@ -511,16 +674,15 @@ Sua internet será liberada em até 5 minutos. Se não liberar, ligue e desligue
                         caption: `📱 *PIX Gerado com Sucesso!*
 
 💰 *Valor:* R$ ${latestBill.valor || latestBill.valor_total || 'Não informado'}
-📅 *Vencimento:* ${latestBill.data_vencimento || latestBill.vencimento || 'Não informado'}
 
-💡 *Como pagar:*
+📱 *Como pagar:*
 1. Abra seu app bancário
 2. Escaneie o QR Code
 3. Confirme o pagamento
 
 🙏 *Deus abençoe seu dia!* ✨
 
-*Para voltar ao início, digite: oi*`
+*Para voltar ao início, digite: inicio*`
                     });
                 } catch (error) {
                     await chat.sendMessage(`📱 *PIX Gerado com Sucesso!*
@@ -530,14 +692,14 @@ Sua internet será liberada em até 5 minutos. Se não liberar, ligue e desligue
 
 📱 *QR Code PIX gerado com sucesso!*
 
-💡 *Como pagar:*
+📱 *Como pagar:*
 1. Abra seu app bancário
 2. Escaneie o QR Code
 3. Confirme o pagamento
 
 🙏 *Deus abençoe seu dia!* ✨
 
-*Para voltar ao início, digite: oi*`);
+*Para voltar ao início, digite: inicio*`);
                 }
             } else {
                 await chat.sendMessage(`❌ Erro ao gerar PIX.
@@ -546,18 +708,18 @@ Cliente encontrado, mas não foi possível extrair o código PIX da resposta da 
 
 *Dados recebidos:* ${JSON.stringify(pixData)}
 
-*Para voltar ao início, digite: oi*`);
+*Para voltar ao início, digite: inicio*`);
             }
 
         } catch (error) {
-            let errorMessage = '❌ Erro ao gerar PIX.';
+            let errorMessage = '📱 Erro ao gerar PIX.';
             
             if (error.message.includes('não encontrado')) {
-                errorMessage = '❌ Cliente não encontrado com este CPF.';
+                errorMessage = '📱 Cliente não encontrado com este CPF.';
             } else if (error.message.includes('serviços cadastrados')) {
-                errorMessage = '❌ Cliente não possui serviços cadastrados.';
+                errorMessage = '📱 Cliente não possui serviços cadastrados.';
             } else if (error.message.includes('cobrança')) {
-                errorMessage = '❌ Nenhuma cobrança encontrada para este serviço.';
+                errorMessage = '📱 Nenhuma cobrança encontrada para este serviço.';
             }
             
             errorMessage += '\n\nVerifique se o CPF está correto e tente novamente.';
@@ -567,35 +729,37 @@ Cliente encontrado, mas não foi possível extrair o código PIX da resposta da 
     }
 
     async sendHelpMessage(chat) {
-        const helpMessage = `🤖 *Assistente Virtual ZcNet* 🌐
+        const helpMessage = `🤖 *ASSISTENTE VIRTUAL ZCNET* 🌐
 
-*Como usar:*
+*COMO USAR:*
 
-1️⃣ *Método por Menu (Recomendado):*
-   • Digite "oi" ou qualquer saudação
+1️⃣ *MÉTODO POR MENU (RECOMENDADO):*
+   • Digite "inicio" ou qualquer saudação
    • Escolha a opção desejada
    • Envie seu CPF (11 dígitos)
    • Receba as informações
 
-2️⃣ *Método Direto:*
+2️⃣ *MÉTODO DIRETO:*
    • Envie seu CPF diretamente (11 dígitos)
    • Exemplo: 12345678901
 
-3️⃣ *Comandos Especiais:*
+3️⃣ *COMANDOS ESPECIAIS:*
    • Digite *!menu* para botões interativos
    • Digite *!lista* para menu em lista
    • Digite *!help* para esta ajuda
 
-*Menu de opções:*
-*1* 💳 Pagamentos (PIX/Boleto)
-*2* 📊 Meus Relatórios
-*3* ❓ Ajuda (esta mensagem)
+*MENU DE OPÇÕES:*
+*1* 💰 PAGAMENTOS (PIX/BOLETO)
+*2* 📊 MEUS RELATÓRIOS
+*3* ❓ AJUDA (esta mensagem)
 
-*Funcionalidades:*
-📄 *Boleto Bancário* - PDF para impressão
+*FUNCIONALIDADES:*
+📄 *BOLETO BANCÁRIO* - PDF para impressão
 📱 *PIX* - Código copia e cola
-📊 *Relatórios* - Uso de dados e acessos
-🆘 *Suporte* - Contato direto
+📊 *RELATÓRIOS* - Uso de dados e acessos
+🆘 *SUPORTE* - Contato direto
+
+🚪 *SAIR DO ATENDIMENTO* - Digite *SAIR*
 📅 *Agendamento* - Marcar horários
 
 *Navegação:*
@@ -606,16 +770,16 @@ Cliente encontrado, mas não foi possível extrair o código PIX da resposta da 
 
 💡 *Dicas:*
 • Use apenas números no CPF (11 dígitos)
-• PIX é mais rápido e prático
+• 📱 PIX é mais rápido e prático
 • Boleto pode ser pago em qualquer banco
-• Funciona com qualquer saudação (oi, olá, bom dia, etc.)
+• Funciona com qualquer saudação (inicio, olá, bom dia, etc.)
 • Use *!menu* e *!lista* para navegação mais fácil
 
 🙏 *Deus abençoe seu dia!* ✨
 
 📞 *Suporte ZcNet:* Entre em contato se houver problemas.
 
-*Para voltar ao início, digite: oi*`;
+*Para voltar ao início, digite: inicio*`;
 
         await chat.sendMessage(helpMessage);
     }

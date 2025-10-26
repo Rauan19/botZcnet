@@ -29,7 +29,7 @@ class App {
                 
                 process.exit(0);
             } catch (error) {
-                console.error('❌ Erro durante o encerramento:', error);
+                
                 process.exit(1);
             }
         };
@@ -56,13 +56,13 @@ class App {
      */
     async start() {
         try {
-            console.log('🚀 Bot WhatsApp ZcNet rodando...');
+          
             
             // Inicia o bot diretamente
             await this.bot.start();
 
         } catch (error) {
-            console.error('❌ Erro ao iniciar aplicação:', error);
+           
             process.exit(1);
         }
     }
@@ -71,6 +71,6 @@ class App {
 // Inicia a aplicação
 const app = new App();
 app.start().catch(error => {
-    console.error('❌ Erro fatal:', error);
+   
     process.exit(1);
 });
