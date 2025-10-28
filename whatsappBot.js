@@ -13,7 +13,35 @@ class WhatsAppBot {
             }),
             puppeteer: {
                 headless: true,
-                args: ['--no-sandbox', '--disable-setuid-sandbox']
+                args: [
+                    '--no-sandbox', 
+                    '--disable-setuid-sandbox',
+                    '--disable-web-security',
+                    '--disable-features=VizDisplayCompositor',
+                    '--disable-background-timer-throttling',
+                    '--disable-backgrounding-occluded-windows',
+                    '--disable-renderer-backgrounding',
+                    '--disable-dev-shm-usage',
+                    '--disable-gpu',
+                    '--no-first-run',
+                    '--no-default-browser-check',
+                    '--disable-default-apps',
+                    '--disable-extensions',
+                    '--disable-plugins',
+                    '--disable-images',
+                    '--disable-javascript',
+                    '--disable-web-security',
+                    '--disable-features=TranslateUI',
+                    '--disable-ipc-flooding-protection'
+                ]
+            },
+            // Desabilita marcação automática de mensagens como lidas
+            markOnlineOnConnect: false,
+            disableWelcome: true,
+            // Configurações para não marcar mensagens como lidas
+            webVersionCache: {
+                type: 'remote',
+                remotePath: 'https://raw.githubusercontent.com/wppconnect-team/wa-version/main/html/2.2412.54.html'
             }
         });
 
@@ -38,6 +66,139 @@ class WhatsAppBot {
         // Bot pronto
         this.client.on('ready', () => {
             console.log('✅ Bot WhatsApp conectado com sucesso!');
+            
+            // Desabilita marcação automática de mensagens como lidas
+            this.client.pupPage.evaluate(() => {
+                console.log('🔧 Iniciando bloqueio RADICAL de marcação de leitura...');
+                
+                // Função para bloquear todas as funções de leitura
+                const blockReadFunctions = () => {
+                    // Bloqueia todas as funções relacionadas a leitura
+                    if (window.Store && window.Store.Msg) {
+                        // Bloqueia markAsRead
+                        window.Store.Msg.markAsRead = function() {
+                            console.log('🚫 BLOQUEADO: markAsRead');
+                            return Promise.resolve();
+                        };
+                        
+                        // Bloqueia ack
+                        window.Store.Msg.ack = function() {
+                            console.log('🚫 BLOQUEADO: ack');
+                            return Promise.resolve();
+                        };
+                        
+                        // Bloqueia sendReadReceipt
+                        if (window.Store.Msg.sendReadReceipt) {
+                            window.Store.Msg.sendReadReceipt = function() {
+                                console.log('🚫 BLOQUEADO: sendReadReceipt');
+                                return Promise.resolve();
+                            };
+                        }
+                        
+                        // Bloqueia markAsReadIfNecessary
+                        if (window.Store.Msg.markAsReadIfNecessary) {
+                            window.Store.Msg.markAsReadIfNecessary = function() {
+                                console.log('🚫 BLOQUEADO: markAsReadIfNecessary');
+                                return Promise.resolve();
+                            };
+                        }
+                        
+                        // Bloqueia markAsReadIfNecessarySync
+                        if (window.Store.Msg.markAsReadIfNecessarySync) {
+                            window.Store.Msg.markAsReadIfNecessarySync = function() {
+                                console.log('🚫 BLOQUEADO: markAsReadIfNecessarySync');
+                                return Promise.resolve();
+                            };
+                        }
+                    }
+                    
+                    // Bloqueia funções do Chat
+                    if (window.Store && window.Store.Chat) {
+                        window.Store.Chat.sendReadReceipt = function() {
+                            console.log('🚫 BLOQUEADO: Chat.sendReadReceipt');
+                            return Promise.resolve();
+                        };
+                        
+                        if (window.Store.Chat.markAsRead) {
+                            window.Store.Chat.markAsRead = function() {
+                                console.log('🚫 BLOQUEADO: Chat.markAsRead');
+                                return Promise.resolve();
+                            };
+                        }
+                    }
+                    
+                    // Bloqueia funções do Conversation
+                    if (window.Store && window.Store.Conversation) {
+                        window.Store.Conversation.sendReadReceipt = function() {
+                            console.log('🚫 BLOQUEADO: Conversation.sendReadReceipt');
+                            return Promise.resolve();
+                        };
+                        
+                        if (window.Store.Conversation.markAsRead) {
+                            window.Store.Conversation.markAsRead = function() {
+                                console.log('🚫 BLOQUEADO: Conversation.markAsRead');
+                                return Promise.resolve();
+                            };
+                        }
+                    }
+                    
+                    // Bloqueia funções do MsgInfo
+                    if (window.Store && window.Store.MsgInfo) {
+                        if (window.Store.MsgInfo.sendReadReceipt) {
+                            window.Store.MsgInfo.sendReadReceipt = function() {
+                                console.log('🚫 BLOQUEADO: MsgInfo.sendReadReceipt');
+                                return Promise.resolve();
+                            };
+                        }
+                    }
+                    
+                    // Bloqueia funções do WebMessageInfo
+                    if (window.Store && window.Store.WebMessageInfo) {
+                        if (window.Store.WebMessageInfo.markAsRead) {
+                            window.Store.WebMessageInfo.markAsRead = function() {
+                                console.log('🚫 BLOQUEADO: WebMessageInfo.markAsRead');
+                                return Promise.resolve();
+                            };
+                        }
+                    }
+                };
+                
+                // Executa o bloqueio imediatamente
+                blockReadFunctions();
+                
+                // Reaplica o bloqueio a cada 1 segundo
+                setInterval(blockReadFunctions, 1000);
+                
+                // Intercepta todas as chamadas de fetch relacionadas a leitura
+                const originalFetch = window.fetch;
+                window.fetch = function(...args) {
+                    const url = args[0];
+                    if (typeof url === 'string' && (url.includes('read') || url.includes('ack') || url.includes('receipt'))) {
+                        console.log('🚫 BLOQUEADO: fetch para leitura -', url);
+                        return Promise.resolve(new Response('{}'));
+                    }
+                    return originalFetch.apply(this, args);
+                };
+                
+                // Intercepta XMLHttpRequest
+                const originalXHR = window.XMLHttpRequest;
+                window.XMLHttpRequest = function() {
+                    const xhr = new originalXHR();
+                    const originalOpen = xhr.open;
+                    xhr.open = function(method, url, ...args) {
+                        if (typeof url === 'string' && (url.includes('read') || url.includes('ack') || url.includes('receipt'))) {
+                            console.log('🚫 BLOQUEADO: XHR para leitura -', url);
+                            return;
+                        }
+                        return originalOpen.apply(this, [method, url, ...args]);
+                    };
+                    return xhr;
+                };
+                
+                console.log('✅ Bloqueio RADICAL de marcação de leitura ativado!');
+            }).catch(error => {
+                console.log('⚠️ Erro ao configurar bloqueio de leitura:', error.message);
+            });
         });
 
         // Erro de autenticação
@@ -56,6 +217,44 @@ class WhatsAppBot {
             if (this.isPaymentRelated(message.body)) {
                 await this.handleMessage(message);
             }
+        });
+
+        // Desabilita marcação automática de mensagens como lidas
+        this.client.on('message_ack', (message, ack) => {
+            // Intercepta e bloqueia confirmações de leitura
+            console.log('🚫 Bloqueando confirmação de leitura para preservar contexto do atendente');
+            return false; // Bloqueia a confirmação
+        });
+
+        // Intercepta e previne marcação de mensagens como lidas
+        this.client.on('message_create', (message) => {
+            // Não marca mensagens como lidas automaticamente
+            console.log('🤖 Bot enviou mensagem sem marcar como lida');
+            
+            // Força o bloqueio de leitura após enviar mensagem
+            setTimeout(() => {
+                this.client.pupPage.evaluate(() => {
+                    // Força o bloqueio novamente após cada mensagem
+                    if (window.Store && window.Store.Msg) {
+                        window.Store.Msg.markAsRead = function() {
+                            console.log('🚫 BLOQUEADO APÓS ENVIO: markAsRead');
+                            return Promise.resolve();
+                        };
+                    }
+                }).catch(() => {});
+            }, 100);
+        });
+
+        // Intercepta mudanças de status de mensagem
+        this.client.on('message_revoke_everyone', (message) => {
+            console.log('🚫 Bloqueando revogação de mensagem');
+            return false;
+        });
+
+        // Intercepta mudanças de status de mensagem
+        this.client.on('message_revoke_me', (message) => {
+            console.log('🚫 Bloqueando revogação de mensagem');
+            return false;
         });
     }
 
@@ -97,6 +296,166 @@ class WhatsAppBot {
         return attendantKeywords.some(keyword => message.includes(keyword));
     }
 
+    /**
+     * Verifica se o cliente mencionou que já pagou
+     */
+    isPaymentConfirmation(messageText) {
+        if (!messageText) return false;
+        
+        console.log('🔍 Verificando confirmação de pagamento para:', messageText);
+        
+        const paymentConfirmationKeywords = [
+            'já paguei', 'ja paguei', 'paguei', 'paguei já', 'já fiz o pagamento',
+            'ja fiz o pagamento', 'fiz o pagamento', 'já paguei a conta', 'ja paguei a conta',
+            'paguei a conta', 'já paguei a internet', 'ja paguei a internet', 'paguei a internet',
+            'já paguei o boleto', 'ja paguei o boleto', 'paguei o boleto', 'já paguei o pix',
+            'ja paguei o pix', 'paguei o pix', 'já transferi', 'ja transferi', 'transferi',
+            'já depositei', 'ja depositei', 'depositei', 'já quitei', 'ja quitei', 'quitei',
+            'já saldei', 'ja saldei', 'saldei', 'já resolvi', 'ja resolvi', 'resolvi',
+            'já cancelei', 'ja cancelei', 'cancelei', 'já paguei tudo', 'ja paguei tudo',
+            'paguei tudo', 'já paguei a fatura', 'ja paguei a fatura', 'paguei a fatura',
+            'já paguei a cobrança', 'ja paguei a cobranca', 'paguei a cobrança', 'paguei a cobranca',
+            'já efetuei o pagamento', 'ja efetuei o pagamento', 'efetuei o pagamento',
+            'já realizei o pagamento', 'ja realizei o pagamento', 'realizei o pagamento',
+            'já processei o pagamento', 'ja processei o pagamento', 'processei o pagamento',
+            'já confirmei o pagamento', 'ja confirmei o pagamento', 'confirmei o pagamento',
+            'já finalizei o pagamento', 'ja finalizei o pagamento', 'finalizei o pagamento',
+            'já concluí o pagamento', 'ja conclui o pagamento', 'concluí o pagamento', 'conclui o pagamento',
+            'já enviei o pagamento', 'ja enviei o pagamento', 'enviei o pagamento',
+            'já mandei o pagamento', 'ja mandei o pagamento', 'mandei o pagamento',
+            'já fiz a transferência', 'ja fiz a transferencia', 'fiz a transferência', 'fiz a transferencia',
+            'já fiz o depósito', 'ja fiz o deposito', 'fiz o depósito', 'fiz o deposito',
+            'já fiz o pix', 'ja fiz o pix', 'fiz o pix', 'já fiz o boleto', 'ja fiz o boleto', 'fiz o boleto',
+            'já paguei online', 'ja paguei online', 'paguei online', 'já paguei pelo app', 'ja paguei pelo app',
+            'paguei pelo app', 'já paguei pelo banco', 'ja paguei pelo banco', 'paguei pelo banco',
+            'já paguei no banco', 'ja paguei no banco', 'paguei no banco', 'já paguei na lotérica',
+            'ja paguei na loterica', 'paguei na lotérica', 'paguei na loterica',
+            'já paguei no caixa', 'ja paguei no caixa', 'paguei no caixa', 'já paguei no terminal',
+            'ja paguei no terminal', 'paguei no terminal', 'já paguei no caixa eletrônico',
+            'ja paguei no caixa eletronico', 'paguei no caixa eletrônico', 'paguei no caixa eletronico',
+            'já paguei no caixa automático', 'ja paguei no caixa automatico', 'paguei no caixa automático', 'paguei no caixa automatico',
+            'já paguei via pix', 'ja paguei via pix', 'paguei via pix', 'já paguei via boleto',
+            'ja paguei via boleto', 'paguei via boleto', 'já paguei via transferência',
+            'ja paguei via transferencia', 'paguei via transferência', 'paguei via transferencia',
+            'já paguei via depósito', 'ja paguei via deposito', 'paguei via depósito', 'paguei via deposito',
+            'já paguei via débito', 'ja paguei via debito', 'paguei via débito', 'paguei via debito',
+            'já paguei via crédito', 'ja paguei via credito', 'paguei via crédito', 'paguei via credito',
+            'já paguei via cartão', 'ja paguei via cartao', 'paguei via cartão', 'paguei via cartao',
+            'já paguei via dinheiro', 'ja paguei via dinheiro', 'paguei via dinheiro',
+            'já paguei via dinheiro vivo', 'ja paguei via dinheiro vivo', 'paguei via dinheiro vivo',
+            'já paguei em dinheiro', 'ja paguei em dinheiro', 'paguei em dinheiro',
+            'já paguei com dinheiro', 'ja paguei com dinheiro', 'paguei com dinheiro',
+            'já paguei em espécie', 'ja paguei em especie', 'paguei em espécie', 'paguei em especie',
+            'já paguei em cash', 'ja paguei em cash', 'paguei em cash', 'já paguei em dinheiro',
+            'ja paguei em dinheiro', 'paguei em dinheiro', 'já paguei em reais', 'ja paguei em reais',
+            'paguei em reais', 'já paguei em real', 'ja paguei em real', 'paguei em real',
+            'já paguei em dinheiro', 'ja paguei em dinheiro', 'paguei em dinheiro',
+            'já paguei em espécie', 'ja paguei em especie', 'paguei em espécie', 'paguei em especie',
+            'já paguei em cash', 'ja paguei em cash', 'paguei em cash', 'já paguei em dinheiro',
+            'ja paguei em dinheiro', 'paguei em dinheiro', 'já paguei em reais', 'ja paguei em reais',
+            'paguei em reais', 'já paguei em real', 'ja paguei em real', 'paguei em real'
+        ];
+        
+        const message = messageText.toLowerCase();
+        
+        // Verifica se contém alguma palavra-chave de confirmação de pagamento
+        const result = paymentConfirmationKeywords.some(keyword => message.includes(keyword));
+        console.log('🔍 Resultado da verificação:', result);
+        return result;
+    }
+
+    /**
+     * Verifica se é mensagem automática do sistema
+     */
+    isSystemMessage(messageText) {
+        if (!messageText) return false;
+        
+        const systemKeywords = [
+            'código de confirmação', 'codigo de confirmacao', 'código de verificação', 'codigo de verificacao',
+            'código de ativação', 'codigo de ativacao', 'código de acesso', 'codigo de acesso',
+            'verification code', 'confirmation code', 'activation code', 'access code',
+            'é seu código', 'e seu codigo', 'seu código', 'seu codigo',
+            'código do', 'codigo do', 'código para', 'codigo para',
+            'não compartilhe', 'nao compartilhe', 'não compartilhe este', 'nao compartilhe este',
+            'do not share', 'don\'t share', 'não responda', 'nao responda',
+            'do not reply', 'don\'t reply', 'não reenvie', 'nao reenvie',
+            'do not forward', 'don\'t forward', 'sistema', 'system',
+            'automático', 'automatico', 'automática', 'automatica',
+            'notificação', 'notificacao', 'notification', 'alerta',
+            'alert', 'aviso', 'warning', 'atenção', 'atencao',
+            'importante', 'important', 'urgente', 'urgent',
+            'código de segurança', 'codigo de seguranca', 'security code',
+            'código de autenticação', 'codigo de autenticacao', 'authentication code',
+            'código de login', 'codigo de login', 'login code',
+            'código de acesso', 'codigo de acesso', 'access code',
+            'código de recuperação', 'codigo de recuperacao', 'recovery code',
+            'código de reset', 'codigo de reset', 'reset code',
+            'código de senha', 'codigo de senha', 'password code',
+            'código de PIN', 'codigo de PIN', 'PIN code',
+            'código de OTP', 'codigo de OTP', 'OTP code',
+            'código de 2FA', 'codigo de 2FA', '2FA code',
+            'código de autenticação de dois fatores', 'codigo de autenticacao de dois fatores',
+            'two-factor authentication code', '2FA authentication code',
+            'código de verificação de dois fatores', 'codigo de verificacao de dois fatores',
+            'two-factor verification code', '2FA verification code',
+            'código de confirmação de dois fatores', 'codigo de confirmacao de dois fatores',
+            'two-factor confirmation code', '2FA confirmation code',
+            'código de ativação de dois fatores', 'codigo de ativacao de dois fatores',
+            'two-factor activation code', '2FA activation code',
+            'código de acesso de dois fatores', 'codigo de acesso de dois fatores',
+            'two-factor access code', '2FA access code',
+            'código de login de dois fatores', 'codigo de login de dois fatores',
+            'two-factor login code', '2FA login code',
+            'código de recuperação de dois fatores', 'codigo de recuperacao de dois fatores',
+            'two-factor recovery code', '2FA recovery code',
+            'código de reset de dois fatores', 'codigo de reset de dois fatores',
+            'two-factor reset code', '2FA reset code',
+            'código de senha de dois fatores', 'codigo de senha de dois fatores',
+            'two-factor password code', '2FA password code',
+            'código de PIN de dois fatores', 'codigo de PIN de dois fatores',
+            'two-factor PIN code', '2FA PIN code',
+            'código de OTP de dois fatores', 'codigo de OTP de dois fatores',
+            'two-factor OTP code', '2FA OTP code'
+        ];
+        
+        const message = messageText.toLowerCase();
+        
+        // Verifica se contém alguma palavra-chave de sistema
+        return systemKeywords.some(keyword => message.includes(keyword));
+    }
+
+    /**
+     * Envia mensagem sem marcar como lida
+     */
+    async sendMessageWithoutRead(chat, messageText) {
+        try {
+            // Envia a mensagem
+            const sentMessage = await chat.sendMessage(messageText);
+            
+            // Força o bloqueio de leitura imediatamente após enviar
+            setTimeout(() => {
+                this.client.pupPage.evaluate(() => {
+                    // Bloqueia todas as funções de leitura
+                    if (window.Store && window.Store.Msg) {
+                        window.Store.Msg.markAsRead = function() {
+                            console.log('🚫 BLOQUEADO NO ENVIO: markAsRead');
+                            return Promise.resolve();
+                        };
+                        window.Store.Msg.ack = function() {
+                            console.log('🚫 BLOQUEADO NO ENVIO: ack');
+                            return Promise.resolve();
+                        };
+                    }
+                }).catch(() => {});
+            }, 50);
+            
+            return sentMessage;
+        } catch (error) {
+            console.error('Erro ao enviar mensagem:', error);
+            throw error;
+        }
+    }
+
     async handleMessage(message) {
         try {
             const contact = await message.getContact();
@@ -105,10 +464,50 @@ class WhatsAppBot {
             // Ignora mensagens do próprio bot
             if (message.fromMe) return;
             
+            // Ignora mensagens de grupos - só responde em conversas privadas
+            if (chat.isGroup) {
+                console.log('🤖 Mensagem de grupo ignorada - bot só responde em conversas privadas');
+                return;
+            }
+
+            // Ignora mensagens automáticas do sistema
+            if (this.isSystemMessage(message.body)) {
+                console.log('🤖 Mensagem automática ignorada - códigos de confirmação, notificações, etc.');
+                return;
+            }
+
+            // Bloqueia marcação de mensagem como lida
+            try {
+                // Intercepta e cancela a marcação de leitura
+                if (message.ack === 0) {
+                    console.log('🚫 Bloqueando marcação de mensagem como lida');
+                    // Não chama message.ack() para evitar marcar como lida
+                }
+            } catch (error) {
+                // Erro silencioso
+            }
+            
             // Para se atendente humano responder (mensagens longas ou com "atendente", "suporte", etc.)
             if (this.isHumanAttendant(message.body)) {
                 console.log('🤖 Bot pausado - Atendente humano assumiu a conversa');
                 return;
+            }
+
+            // Verifica se cliente mencionou que já pagou
+            console.log('🔍 Verificando mensagem:', message.body);
+            if (this.isPaymentConfirmation(message.body)) {
+                console.log('✅ Cliente confirmou pagamento - não oferecendo opções de pagamento');
+                await this.sendMessageWithoutRead(chat, `✅ *PAGAMENTO CONFIRMADO!*
+                
+Obrigado por informar que já efetuou o pagamento! 🙏
+
+⏰ *Sua internet será liberada em até 5 minutos.*
+Se não liberar automaticamente, desligue e ligue os equipamentos.
+
+🙏 *Deus abençoe seu dia!* ✨`);
+                return;
+            } else {
+                console.log('❌ Mensagem não detectada como confirmação de pagamento');
             }
 
             const messageText = message.body.trim();
