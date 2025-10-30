@@ -350,6 +350,25 @@ class App {
             app.listen(PORT, () => {
                 console.log(`📊 Painel iniciado em http://localhost:${PORT}`);
             });
+            
+            // API: resetar sessão (apagar tokens e reiniciar bot para gerar novo QR)
+            app.post('/api/session/reset', async (req, res) => {
+                try {
+                    // Tenta deslogar da sessão atual para invalidar pareamento
+                    try { if (this.bot?.client && typeof this.bot.client.logout === 'function') { await this.bot.client.logout(); } } catch (_) {}
+                    // Para o bot com segurança
+                    try { await this.bot.stop(); } catch (_) {}
+                    // Apaga pasta de tokens da sessão
+                    const tokensDir = path.join(__dirname, 'tokens', 'zcnet-bot');
+                    try { if (fs.existsSync(tokensDir)) fs.rmSync(tokensDir, { recursive: true, force: true }); } catch (_) {}
+                    // Reinicia o bot (irá gerar QR no console)
+                    await this.bot.start();
+                    return res.json({ ok: true });
+                } catch (e) {
+                    console.error('❌ Erro ao resetar sessão:', e);
+                    return res.status(500).json({ error: 'internal_error' });
+                }
+            });
         } catch (e) {
             console.error('❌ Falha ao iniciar painel:', e);
         }
