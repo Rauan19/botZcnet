@@ -1,0 +1,1627 @@
+<!doctype html>
+<html lang="pt-br">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>ZCNET CHAT ATENDIMENTO</title>
+  <style>
+    * { box-sizing: border-box; }
+    body { 
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; 
+      margin: 0; 
+      background: linear-gradient(135deg, #0f172a 0%, #1e293b 100%); 
+      color: #e2e8f0; 
+      height: 100vh;
+      overflow: hidden;
+    }
+    
+    .app-container {
+      display: flex;
+      height: 100vh;
+    }
+    
+    /* Header */
+    .header { 
+      position: fixed;
+      top: 0;
+      left: 0;
+      right: 0;
+      z-index: 100;
+      padding: 12px 20px; 
+      background: rgba(15, 23, 42, 0.95); 
+      backdrop-filter: blur(10px);
+      border-bottom: 1px solid rgba(30, 41, 59, 0.5); 
+      display: flex; 
+      align-items: center; 
+      justify-content: space-between;
+      box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1);
+    }
+    
+    .header h1 { 
+      margin: 0; 
+      font-size: 20px; 
+      font-weight: 700;
+      background: linear-gradient(135deg, #3b82f6, #8b5cf6);
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+    }
+    
+    .menu-toggle {
+      display: none;
+      background: none;
+      border: none;
+      color: #e2e8f0;
+      font-size: 24px;
+      cursor: pointer;
+      padding: 4px 8px;
+    }
+    
+    .back-button {
+      display: none;
+      background: none;
+      border: none;
+      color: #e2e8f0;
+      font-size: 20px;
+      cursor: pointer;
+      padding: 4px 8px;
+      margin-right: 8px;
+    }
+    
+    .status-indicator {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 6px 12px;
+      background: rgba(34, 197, 94, 0.1);
+      border: 1px solid rgba(34, 197, 94, 0.3);
+      border-radius: 20px;
+      font-size: 12px;
+      font-weight: 500;
+    }
+    
+    .status-dot {
+      width: 8px;
+      height: 8px;
+      background: #22c55e;
+      border-radius: 50%;
+      animation: pulse 2s infinite;
+    }
+    
+    @keyframes pulse {
+      0%, 100% { opacity: 1; }
+      50% { opacity: 0.5; }
+    }
+    
+    /* Main Layout */
+    .main-content {
+      display: flex;
+      height: 100vh;
+      padding-top: 60px;
+    }
+    
+    .sidebar { 
+      width: 350px;
+      background: rgba(15, 23, 42, 0.8);
+      border-right: 1px solid rgba(30, 41, 59, 0.5);
+      display: flex;
+      flex-direction: column;
+      backdrop-filter: blur(10px);
+    }
+    
+    .chat-area { 
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      background: rgba(30, 41, 59, 0.3);
+    }
+    
+    /* Sidebar Content */
+    .sidebar-header {
+      padding: 20px;
+      border-bottom: 1px solid rgba(30, 41, 59, 0.5);
+      background: rgba(15, 23, 42, 0.9);
+    }
+    
+    .search-box {
+      width: 100%;
+      padding: 10px 16px;
+      background: rgba(30, 41, 59, 0.5);
+      border: 1px solid rgba(71, 85, 105, 0.3);
+      border-radius: 12px;
+      color: #e2e8f0;
+      font-size: 14px;
+      outline: none;
+      transition: all 0.2s;
+    }
+    
+    .search-box:focus {
+      border-color: #3b82f6;
+      box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.1);
+    }
+    
+    .search-box::placeholder {
+      color: #94a3b8;
+    }
+    
+    .chats-list {
+      flex: 1;
+      overflow-y: auto;
+      padding: 8px 0;
+    }
+    
+    .chat-item { 
+      padding: 16px 20px; 
+      cursor: pointer; 
+      display: flex; 
+      align-items: center; 
+      gap: 12px;
+      transition: all 0.2s;
+      border-bottom: 1px solid rgba(30, 41, 59, 0.2);
+      position: relative;
+    }
+    
+    .chat-item:hover { 
+      background: rgba(59, 130, 246, 0.1);
+      transform: translateX(4px);
+    }
+    
+    .chat-item.active {
+      background: rgba(59, 130, 246, 0.2);
+      border-left: 3px solid #3b82f6;
+    }
+    
+    .chat-avatar {
+      width: 48px;
+      height: 48px;
+      border-radius: 50%;
+      background: linear-gradient(135deg, #3b82f6, #8b5cf6);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-weight: bold;
+      font-size: 18px;
+      color: white;
+      flex-shrink: 0;
+      position: relative;
+      overflow: hidden;
+    }
+    .chat-avatar img { width: 100%; height: 100%; object-fit: cover; display: block; }
+    
+    .chat-info {
+      flex: 1;
+      min-width: 0;
+    }
+    
+    .chat-name {
+      font-weight: 600;
+      font-size: 15px;
+      margin-bottom: 4px;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    
+    .chat-preview {
+      color: #94a3b8;
+      font-size: 13px;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    
+    .chat-meta {
+      display: flex;
+      flex-direction: column;
+      align-items: flex-end;
+      gap: 4px;
+    }
+    
+    .chat-time {
+      color: #64748b;
+      font-size: 11px;
+    }
+    
+    .unread-badge { 
+      background: linear-gradient(135deg, #ef4444, #dc2626);
+      color: white; 
+      border-radius: 12px; 
+      padding: 4px 8px; 
+      font-size: 11px; 
+      font-weight: 600;
+      min-width: 20px; 
+      text-align: center;
+      box-shadow: 0 2px 4px rgba(239, 68, 68, 0.3);
+    }
+    
+    /* Chat Area */
+    .chat-header {
+      padding: 20px;
+      background: rgba(15, 23, 42, 0.9);
+      border-bottom: 1px solid rgba(30, 41, 59, 0.5);
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+    }
+    
+    .chat-title {
+      font-size: 18px;
+      font-weight: 700;
+      margin: 0;
+    }
+    
+    .chat-actions {
+      display: flex;
+      gap: 8px;
+    }
+    
+    .messages-container { 
+      flex: 1; 
+      overflow-y: auto; 
+      padding: 20px;
+      background: linear-gradient(180deg, rgba(30, 41, 59, 0.2) 0%, rgba(15, 23, 42, 0.1) 100%);
+    }
+    
+    .message { 
+      max-width: 70%; 
+      margin-bottom: 12px;
+      animation: slideIn 0.3s ease-out;
+    }
+    
+    @keyframes slideIn {
+      from { opacity: 0; transform: translateY(10px); }
+      to { opacity: 1; transform: translateY(0); }
+    }
+    
+    .message.in { 
+      align-self: flex-start;
+      margin-right: auto;
+      margin-left: 0;
+    }
+    
+    .message.out { 
+      align-self: flex-end;
+      margin-left: auto;
+      margin-right: 0;
+    }
+    
+    .message-bubble {
+      padding: 12px 16px;
+      border-radius: 18px;
+      position: relative;
+      word-wrap: break-word;
+      max-width: 100%;
+    }
+    
+    .audio-message {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      padding: 10px;
+      background: rgba(0, 0, 0, 0.2);
+      border-radius: 12px;
+      min-width: 200px;
+    }
+    
+    .audio-btn-play {
+      width: 40px;
+      height: 40px;
+      border-radius: 50%;
+      background: rgba(255, 255, 255, 0.2);
+      border: none;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 18px;
+      transition: all 0.2s;
+      flex-shrink: 0;
+    }
+    
+    .audio-btn-play:hover {
+      background: rgba(255, 255, 255, 0.3);
+      transform: scale(1.1);
+    }
+    
+    .audio-waveform {
+      flex: 1;
+      height: 30px;
+      display: flex;
+      align-items: center;
+      gap: 3px;
+    }
+    
+    .audio-waveform-bar {
+      width: 3px;
+      background: rgba(255, 255, 255, 0.5);
+      border-radius: 2px;
+      transition: height 0.1s;
+    }
+    
+    .audio-duration {
+      font-size: 12px;
+      color: rgba(255, 255, 255, 0.7);
+      min-width: 35px;
+    }
+    
+    .message.in .message-bubble {
+      background: rgba(30, 41, 59, 0.8);
+      border-bottom-left-radius: 4px;
+      border-top-left-radius: 4px;
+      border-top-right-radius: 18px;
+      border-bottom-right-radius: 18px;
+    }
+    
+    .message.out .message-bubble {
+      background: linear-gradient(135deg, #059669, #047857);
+      border-bottom-right-radius: 4px;
+      border-top-right-radius: 4px;
+      border-top-left-radius: 18px;
+      border-bottom-left-radius: 18px;
+    }
+    
+    .message-text {
+      margin: 0;
+      line-height: 1.4;
+      word-break: break-word;
+      overflow-wrap: anywhere;
+      white-space: pre-wrap;
+    }
+
+    /* Imagens dentro da mensagem (ex.: QRCode) ficam responsivas */
+    .message-bubble img {
+      max-width: 100%;
+      height: auto;
+      border-radius: 12px;
+      display: block;
+    }
+
+    /* Anexo (PDF, etc.) */
+    .attachment {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      padding: 10px 12px;
+      border-radius: 12px;
+      background: rgba(0,0,0,0.15);
+      margin-bottom: 6px;
+    }
+    .attachment .icon {
+      width: 28px;
+      height: 28px;
+      border-radius: 6px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      background: rgba(59,130,246,0.2);
+      color: #93c5fd;
+      font-size: 14px;
+      flex-shrink: 0;
+    }
+    .attachment .name {
+      font-size: 13px;
+      color: #e2e8f0;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      max-width: 220px;
+    }
+    
+    .message-time { 
+      display: block; 
+      margin-top: 6px; 
+      color: rgba(255, 255, 255, 0.6); 
+      font-size: 11px;
+      text-align: right;
+    }
+    
+    .message.in .message-time {
+      text-align: left;
+    }
+
+    /* Ticks (dois tracinhos) estilo WhatsApp */
+    .message-meta { display: flex; align-items: flex-end; justify-content: space-between; gap: 8px; margin-top: 6px; }
+    .ticks { display: inline-flex; flex-direction: column; align-items: flex-end; gap: 2px; opacity: 0.6; line-height: 1; }
+    .tick { width: 14px; height: 2px; background: rgba(255,255,255,0.7); border-radius: 1px; }
+    .ticks.read .tick { background: #60a5fa; /* azul */ }
+    .ticks.hidden { opacity: 0.15; }
+
+    /* Separador de não lidas */
+    .unread-separator {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      margin: 14px 0;
+      color: #94a3b8;
+      font-size: 12px;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      opacity: 0.9;
+    }
+    .unread-separator::before,
+    .unread-separator::after {
+      content: '';
+      flex: 1;
+      height: 1px;
+      background: rgba(148, 163, 184, 0.3);
+    }
+    .unread-separator .unread-label {
+      padding: 4px 10px;
+      border-radius: 999px;
+      background: linear-gradient(135deg, #3b82f6, #2563eb);
+      color: #fff;
+      box-shadow: 0 2px 8px rgba(37, 99, 235, 0.35);
+      letter-spacing: 0.1em;
+    }
+    
+    .empty-state {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      height: 100%;
+      color: #64748b;
+      text-align: center;
+    }
+    
+    .empty-icon {
+      font-size: 48px;
+      margin-bottom: 16px;
+      opacity: 0.5;
+    }
+    
+    .empty-text {
+      font-size: 16px;
+      margin-bottom: 8px;
+    }
+    
+    .empty-subtext {
+      font-size: 14px;
+      opacity: 0.7;
+    }
+    
+    /* Message Input */
+    .message-input-container {
+      padding: 16px 20px;
+      background: rgba(15, 23, 42, 0.95);
+      border-top: 1px solid rgba(30, 41, 59, 0.5);
+      backdrop-filter: blur(10px);
+    }
+    
+    .message-input-wrapper {
+      display: flex;
+      gap: 12px;
+      align-items: center;
+    }
+    
+    .message-input {
+      flex: 1;
+      padding: 12px 16px;
+      background: rgba(30, 41, 59, 0.8);
+      border: 1px solid rgba(71, 85, 105, 0.3);
+      border-radius: 24px;
+      color: #e2e8f0;
+      font-size: 14px;
+      outline: none;
+      transition: all 0.2s;
+    }
+    
+    .message-input:focus {
+      border-color: #3b82f6;
+      box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.1);
+    }
+    
+    .message-input::placeholder {
+      color: #94a3b8;
+    }
+    
+    .audio-btn {
+      flex-shrink: 0;
+      padding: 12px;
+      background: transparent;
+      border: none;
+      color: #3b82f6;
+      font-size: 20px;
+      cursor: pointer;
+      border-radius: 50%;
+      transition: all 0.2s;
+    }
+    
+    .audio-btn:hover {
+      background: rgba(59, 130, 246, 0.1);
+      transform: scale(1.1);
+    }
+    
+    .audio-recording {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      padding: 12px 16px;
+      background: rgba(239, 68, 68, 0.1);
+      border-top: 1px solid rgba(239, 68, 68, 0.3);
+    }
+    
+    .recording-indicator {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      flex: 1;
+      color: #ef4444;
+      font-weight: 600;
+    }
+    
+    .recording-dot {
+      width: 12px;
+      height: 12px;
+      background: #ef4444;
+      border-radius: 50%;
+      animation: pulse-recording 1s infinite;
+    }
+    
+    @keyframes pulse-recording {
+      0%, 100% { opacity: 1; }
+      50% { opacity: 0.3; }
+    }
+    
+    .send-btn {
+      flex-shrink: 0;
+      padding: 12px 24px;
+      border-radius: 24px;
+    }
+    
+    .send-btn:disabled {
+      opacity: 0.5;
+      cursor: not-allowed;
+    }
+    
+    /* Buttons */
+    .btn {
+      padding: 10px 16px;
+      border: none;
+      border-radius: 10px;
+      font-weight: 600;
+      font-size: 13px;
+      cursor: pointer;
+      transition: all 0.2s;
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+    }
+    
+    .btn-primary {
+      background: linear-gradient(135deg, #3b82f6, #2563eb);
+      color: white;
+    }
+    
+    .btn-primary:hover {
+      transform: translateY(-1px);
+      box-shadow: 0 4px 12px rgba(59, 130, 246, 0.4);
+    }
+    
+    .btn-secondary {
+      background: rgba(71, 85, 105, 0.8);
+      color: #e2e8f0;
+    }
+    
+    .btn-secondary:hover {
+      background: rgba(71, 85, 105, 1);
+    }
+    
+    .btn:disabled {
+      opacity: 0.5;
+      cursor: not-allowed;
+      transform: none !important;
+    }
+    
+    /* Scrollbar */
+    ::-webkit-scrollbar {
+      width: 6px;
+    }
+    
+    ::-webkit-scrollbar-track {
+      background: rgba(30, 41, 59, 0.3);
+    }
+    
+    ::-webkit-scrollbar-thumb {
+      background: rgba(71, 85, 105, 0.5);
+      border-radius: 3px;
+    }
+    
+    ::-webkit-scrollbar-thumb:hover {
+      background: rgba(71, 85, 105, 0.8);
+    }
+    
+    /* Loading */
+    .loading {
+      display: inline-block;
+      width: 16px;
+      height: 16px;
+      border: 2px solid rgba(255, 255, 255, 0.3);
+      border-radius: 50%;
+      border-top-color: #3b82f6;
+      animation: spin 1s ease-in-out infinite;
+    }
+    
+    @keyframes spin {
+      to { transform: rotate(360deg); }
+    }
+    
+    /* Responsive Mobile */
+    @media (max-width: 768px) {
+      .menu-toggle {
+        display: inline-block !important;
+      }
+      
+      .header {
+        padding: 10px 14px;
+      }
+      
+      .header h1 {
+        margin-left: 8px;
+      }
+      
+      .header h1 {
+        font-size: 16px;
+      }
+      
+      .status-indicator {
+        padding: 4px 8px;
+        font-size: 11px;
+      }
+      
+      /* No mobile, lista de conversas é a tela inicial */
+      .main-content {
+        flex-direction: row;
+        height: 100%;
+      }
+      
+      .sidebar {
+        display: block;
+        width: 100%;
+        max-width: 100%;
+        position: static;
+        transform: none;
+      }
+      
+      .chat-area {
+        display: none;
+        width: 100%;
+        min-width: 100%;
+        position: fixed;
+        left: 0;
+        top: 60px;
+        bottom: 0;
+        background: rgba(30, 41, 59, 0.3);
+      }
+      
+      .chat-area.show {
+        display: flex;
+        flex-direction: column;
+      }
+      
+      .sidebar-header {
+        padding: 10px;
+      }
+      
+      .search-box {
+        padding: 7px 10px;
+        font-size: 13px;
+      }
+      
+      .chat-item {
+        padding: 10px 12px;
+        gap: 10px;
+      }
+      
+      .chat-avatar {
+        width: 36px;
+        height: 36px;
+        font-size: 14px;
+      }
+      
+      .chat-name {
+        font-size: 13px;
+        margin-bottom: 2px;
+      }
+      
+      .chat-preview {
+        font-size: 11px;
+      }
+      
+      .chat-time {
+        font-size: 9px;
+      }
+      
+      .unread-badge {
+        font-size: 9px;
+        padding: 2px 5px;
+        min-width: 16px;
+      }
+      
+      .chat-area {
+        width: 100%;
+      }
+      
+      .chat-header {
+        padding: 10px 12px;
+      }
+      
+      .back-button {
+        display: inline-block !important;
+      }
+      
+      .chat-title {
+        font-size: 15px;
+        margin: 0;
+      }
+      
+      .chat-actions {
+        gap: 6px;
+      }
+      
+      .btn {
+        padding: 6px 10px;
+        font-size: 11px;
+      }
+      
+      .messages-container {
+        padding: 10px;
+      }
+      
+      .message {
+        max-width: 85%;
+        margin-bottom: 6px;
+      }
+      
+      .message-bubble {
+        padding: 8px 10px;
+        font-size: 13px;
+        border-radius: 14px;
+      }
+      
+      .audio-message {
+        min-width: 150px;
+        padding: 8px;
+        gap: 8px;
+      }
+      
+      .audio-btn-play {
+        width: 32px;
+        height: 32px;
+        font-size: 14px;
+      }
+      
+      .audio-waveform {
+        height: 25px;
+      }
+      
+      .audio-waveform-bar {
+        width: 2px;
+      }
+      
+      .audio-duration {
+        font-size: 10px;
+      }
+      
+      .message-time {
+        font-size: 9px;
+        margin-top: 3px;
+      }
+      
+      .message-input-container {
+        padding: 10px 12px;
+      }
+      
+      .audio-btn {
+        padding: 8px;
+        font-size: 18px;
+      }
+      
+      .message-input {
+        padding: 8px 12px;
+        font-size: 13px;
+      }
+      
+      .send-btn {
+        padding: 8px 16px;
+        font-size: 12px;
+      }
+      
+      .empty-icon {
+        font-size: 36px;
+      }
+      
+      .empty-text {
+        font-size: 14px;
+      }
+      
+      .empty-subtext {
+        font-size: 12px;
+      }
+      
+      /* Se não tem chat selecionado, mostra mensagem inicial */
+      #messages .empty-state {
+        padding: 40px 20px;
+      }
+    }
+  </style>
+</head>
+<body>
+  <div class="app-container">
+    <header class="header">
+      <button class="menu-toggle" id="menuToggle">☰</button>
+      <h1>ZCNET CHAT ATENDIMENTO</h1>
+      <div class="status-indicator" id="status">
+        <div class="status-dot"></div>
+        <span>Conectando...</span>
+      </div>
+    </header>
+    
+    <div class="main-content">
+      <aside class="sidebar">
+        <div class="sidebar-header">
+          <input type="text" class="search-box" placeholder="🔍 Buscar conversas..." id="searchInput">
+        </div>
+        <div class="chats-list" id="chatList">
+          <div class="empty-state">
+            <div class="loading"></div>
+            <div class="empty-text">Carregando conversas...</div>
+          </div>
+        </div>
+      </aside>
+      
+      <div class="sidebar-overlay" onclick="closeSidebar()"></div>
+      
+      <section class="chat-area">
+        <div class="chat-header" id="chatHeader" style="display: none;">
+          <div style="display: flex; align-items: center;">
+            <button class="back-button" id="backButton" onclick="toggleSidebar()">←</button>
+            <h2 class="chat-title" id="chatTitle">Selecione uma conversa</h2>
+          </div>
+          <div class="chat-actions">
+            <button class="btn btn-primary" id="markRead" disabled>
+              ✓ Marcar como lido
+            </button>
+          </div>
+        </div>
+        
+        <div class="messages-container" id="messages">
+          <div class="empty-state">
+            <div class="empty-icon">💬</div>
+            <div class="empty-text">Selecione uma conversa</div>
+            <div class="empty-subtext">Escolha um chat na lista para ver as mensagens</div>
+          </div>
+        </div>
+        
+        <div class="message-input-container" id="messageInputContainer" style="display: none;">
+          <div class="message-input-wrapper">
+            <button class="audio-btn" id="audioBtn" title="Gravar áudio">
+              <span id="audioIcon">🎤</span>
+            </button>
+            <input type="text" 
+                   class="message-input" 
+                   id="messageInput" 
+                   placeholder="Digite sua mensagem..." 
+                   maxlength="4000">
+            <button class="btn btn-primary send-btn" id="sendBtn">
+              <span>Enviar</span>
+            </button>
+          </div>
+          <div class="audio-recording" id="audioRecording" style="display: none;">
+            <div class="recording-indicator">
+              <span class="recording-dot"></span>
+              <span id="recordingTime">00:00</span>
+            </div>
+            <button class="btn btn-secondary" id="cancelAudio">Cancelar</button>
+            <button class="btn btn-primary" id="sendAudio">Enviar</button>
+          </div>
+        </div>
+      </section>
+    </div>
+  </div>
+
+  <script>
+    let currentChatId = null;
+    let allChats = [];
+    let filteredChats = [];
+
+    async function fetchJSON(url, options) {
+      const res = await fetch(url, options);
+      if (!res.ok) throw new Error('HTTP ' + res.status);
+      return await res.json();
+    }
+
+    function formatTime(ts) {
+      try { 
+        const date = new Date(ts);
+        const now = new Date();
+        const diff = now - date;
+        
+        if (diff < 60000) return 'Agora';
+        if (diff < 3600000) return Math.floor(diff / 60000) + 'min';
+        if (diff < 86400000) return Math.floor(diff / 3600000) + 'h';
+        if (diff < 604800000) return Math.floor(diff / 86400000) + 'd';
+        
+        return date.toLocaleDateString('pt-BR', { day: '2-digit', month: '2-digit' });
+      } catch { 
+        return '--'; 
+      }
+    }
+
+    function getInitials(name) {
+      if (!name) return '?';
+      return name.split(' ').map(n => n[0]).join('').toUpperCase().slice(0, 2);
+    }
+
+    function escapeHtml(s) {
+      return String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;','\'':'&#39;'}[c]));
+    }
+
+    function updateStatus(online) {
+      const status = document.getElementById('status');
+      const dot = status.querySelector('.status-dot');
+      const text = status.querySelector('span');
+      
+      if (online) {
+        dot.style.background = '#22c55e';
+        text.textContent = 'Online';
+      } else {
+        dot.style.background = '#ef4444';
+        text.textContent = 'Offline';
+      }
+    }
+
+    function renderChats(chats, skipRenderIfNoChange = false) {
+      const list = document.getElementById('chatList');
+      
+      if (chats.length === 0) {
+        list.innerHTML = `
+          <div class="empty-state">
+            <div class="empty-icon">💬</div>
+            <div class="empty-text">Nenhuma conversa</div>
+            <div class="empty-subtext">As conversas aparecerão aqui quando chegarem mensagens</div>
+          </div>
+        `;
+        return;
+      }
+
+      // Se tem chats, sempre renderiza
+      list.innerHTML = '';
+      chats.forEach(chat => {
+        const div = document.createElement('div');
+        div.className = `chat-item ${currentChatId === chat.id ? 'active' : ''}`;
+        div.setAttribute('data-chat-id', chat.id);
+        div.onclick = () => selectChat(chat.id);
+        
+        const initials = getInitials(chat.name);
+        const photoUrl = `/api/chats/${encodeURIComponent(chat.id)}/photo`;
+        const preview = chat.lastMessage?.text ? chat.lastMessage.text.slice(0, 40) + '...' : 'Sem mensagens';
+        const time = chat.lastMessage ? formatTime(chat.lastMessage.timestamp) : '';
+        
+        div.innerHTML = `
+          <div class="chat-avatar">
+            <img src="${photoUrl}" alt="avatar" onerror="this.style.display='none';this.nextElementSibling.style.display='flex';" />
+            <div style="position:absolute;inset:0;display:none;align-items:center;justify-content:center;">${initials}</div>
+          </div>
+          <div class="chat-info">
+            <div class="chat-name">${escapeHtml(chat.name || chat.id)}</div>
+            <div class="chat-preview">${escapeHtml(preview)}</div>
+          </div>
+          <div class="chat-meta">
+            <div class="chat-time">${time}</div>
+            ${chat.unreadCount > 0 ? `<div class="unread-badge">${chat.unreadCount}</div>` : ''}
+          </div>
+        `;
+        list.appendChild(div);
+      });
+    }
+
+    async function loadChats(silent = false) {
+      try {
+        const data = await fetchJSON('/api/chats');
+        allChats = data.chats || [];
+        filteredChats = allChats;
+        
+        // Sempre renderiza quando não é silencioso ou quando não tem conversas ainda
+        renderChats(filteredChats, silent);
+        updateStatus(true);
+      } catch (e) {
+        console.error('Erro ao carregar chats:', e);
+        allChats = [];
+        filteredChats = [];
+        renderChats([]);
+        updateStatus(false);
+      }
+    }
+
+    async function selectChat(id) {
+      currentChatId = id;
+      const chat = allChats.find(c => c.id === id);
+      
+      // Atualiza visual dos chats
+      document.querySelectorAll('.chat-item').forEach(item => {
+        item.classList.remove('active');
+        if (item.getAttribute('data-chat-id') === id) {
+          item.classList.add('active');
+        }
+      });
+      
+      // No mobile, mostra área de chat e esconde lista
+      if (window.innerWidth <= 768) {
+        document.querySelector('.sidebar').style.display = 'none';
+        document.querySelector('.chat-area').classList.add('show');
+        document.querySelector('.sidebar-overlay')?.classList.remove('active');
+      }
+      
+      // Mostra header do chat
+      const header = document.getElementById('chatHeader');
+      const title = document.getElementById('chatTitle');
+      const markReadBtn = document.getElementById('markRead');
+      const inputContainer = document.getElementById('messageInputContainer');
+      
+      header.style.display = 'flex';
+      title.textContent = chat?.name || chat?.id || 'Conversa';
+      markReadBtn.disabled = false;
+      inputContainer.style.display = 'block';
+      
+      // Foca no input
+      setTimeout(() => {
+        document.getElementById('messageInput').focus();
+      }, 100);
+      
+      await loadMessages();
+    }
+    
+    function toggleSidebar() {
+      const sidebar = document.querySelector('.sidebar');
+      const chatArea = document.querySelector('.chat-area');
+      const overlay = document.querySelector('.sidebar-overlay');
+      
+      // No mobile, troca entre lista e chat
+      if (window.innerWidth <= 768) {
+        if (chatArea.classList.contains('show')) {
+          // Volta para lista
+          chatArea.classList.remove('show');
+          sidebar.style.display = 'block';
+        } else {
+          // Vai para chat (se tiver conversa selecionada)
+          if (currentChatId) {
+            sidebar.style.display = 'none';
+            chatArea.classList.add('show');
+          }
+        }
+      } else {
+        // Desktop: toggle normal
+        if (sidebar.classList.contains('open')) {
+          sidebar.classList.remove('open');
+          if (overlay) overlay.classList.remove('active');
+        } else {
+          sidebar.classList.add('open');
+          if (overlay) overlay.classList.add('active');
+        }
+      }
+    }
+    
+    // Fecha sidebar ao clicar no overlay (desktop)
+    function closeSidebar() {
+      if (window.innerWidth > 768) {
+        document.querySelector('.sidebar').classList.remove('open');
+        const overlay = document.querySelector('.sidebar-overlay');
+        if (overlay) overlay.classList.remove('active');
+      }
+    }
+
+    async function loadMessages(silent = false) {
+      if (!currentChatId) return;
+      
+      try {
+        const data = await fetchJSON('/api/chats/' + encodeURIComponent(currentChatId));
+        const container = document.getElementById('messages');
+        const messageCount = container.querySelectorAll('.message').length;
+        
+        // Se não é silencioso ou não tem mensagens ainda, renderiza tudo
+        if (!silent || messageCount === 0) {
+          if (data.messages.length === 0) {
+            container.innerHTML = `
+              <div class="empty-state">
+                <div class="empty-icon">💬</div>
+                <div class="empty-text">Nenhuma mensagem</div>
+                <div class="empty-subtext">As mensagens desta conversa aparecerão aqui</div>
+              </div>
+            `;
+            return;
+          }
+          
+          // Renderiza todas as mensagens (primeira vez)
+          container.innerHTML = '';
+          const unreadCount = Number(data.unreadCount || 0);
+          // Coloca separador na PRIMEIRA mensagem NÃO LIDA do CLIENTE (percorrendo de trás para frente)
+          let unreadIndex = -1;
+          if (unreadCount > 0) {
+            let countIn = 0;
+            for (let i = data.messages.length - 1; i >= 0; i--) {
+              if (data.messages[i].direction !== 'out') {
+                countIn++;
+                if (countIn === unreadCount) { unreadIndex = i; break; }
+              }
+            }
+          }
+
+          data.messages.forEach((msg, idx) => {
+            if (idx === unreadIndex) {
+              const sep = document.createElement('div');
+              sep.className = 'unread-separator';
+              sep.innerHTML = '<span class="unread-label">NÃO LIDAS</span>';
+              container.appendChild(sep);
+            }
+            const msgId = msg.id || `${msg.timestamp}_${msg.direction}`;
+            const div = document.createElement('div');
+            div.className = `message ${msg.direction === 'out' ? 'out' : 'in'}`;
+            div.dataset.msgId = msgId;
+            
+            // Verifica se é mensagem de áudio
+            const isAudio = msg.text === '[áudio]';
+            const isRead = unreadIndex === -1 || idx < unreadIndex;
+            const ticksClass = isRead ? 'ticks read' : 'ticks';
+            // Detecta PDF/anexo por metadado do backend
+            const hasFile = !!msg.fileId;
+            const isPdf = hasFile && String(msg.fileType || '').includes('pdf');
+            const fileName = msg.fileName || 'arquivo.pdf';
+            
+            let contentHtml = '';
+            if (isAudio) {
+              contentHtml = `
+                <div class="audio-message" data-audio-id="${escapeHtml(msg.audioId || '')}">
+                  <button class="audio-btn-play" onclick="playAudio(this)">▶️</button>
+                  <div class="audio-waveform">
+                    ${Array(20).fill(0).map(() => `
+                      <div class=\"audio-waveform-bar\" style=\"height: ${10 + Math.random() * 20}px\"></div>
+                    `).join('')}
+                  </div>
+                  <div class="audio-duration">--:--</div>
+                </div>`;
+            } else if (hasFile) {
+              contentHtml = `
+                <a class=\"attachment\" href=\"/api/files/${encodeURIComponent(msg.fileId)}\" target=\"_blank\" rel=\"noopener\">
+                  <div class=\"icon\">📄</div>
+                  <div class=\"name\" title=\"${escapeHtml(fileName)}\">${escapeHtml(fileName)}</div>
+                </a>
+                <div class=\"message-text\">${escapeHtml((msg.text || '').replace(/\\[arquivo\\]\\s*/i, ''))}</div>`;
+            } else if (isPdf) {
+              contentHtml = `
+                <div class=\"attachment\">
+                  <div class=\"icon\">📄</div>
+                  <div class=\"name\" title=\"${escapeHtml(fileName)}\">${escapeHtml(fileName)}</div>
+                </div>
+                <div class=\"message-text\">${escapeHtml((msg.text || '').replace(/\\[arquivo\\]\\s*/i, ''))}</div>`;
+            } else {
+              contentHtml = `<div class=\"message-text\">${escapeHtml(msg.text || '')}</div>`;
+            }
+
+            div.innerHTML = `
+              <div class="message-bubble">
+                ${contentHtml}
+                <div class="message-meta">
+                  <span class="message-time">${formatTime(msg.timestamp)}</span>
+                  <span class="${ticksClass}" title="${isRead ? 'Lida' : 'Não lida'}">
+                    <span class="tick"></span><span class="tick"></span>
+                  </span>
+                </div>
+              </div>
+            `;
+            container.appendChild(div);
+          });
+          
+          // Scroll: prioriza ir até o separador de NÃO LIDAS; se não houver, vai ao final
+          setTimeout(() => {
+            const sep = container.querySelector('.unread-separator');
+            if (sep) {
+              const top = sep.offsetTop - 120; // offset maior para mostrar mais contexto abaixo
+              container.scrollTop = top < 0 ? 0 : top;
+            } else {
+              container.scrollTop = container.scrollHeight;
+            }
+          }, 100);
+          
+        } else if (data.messages.length > messageCount) {
+          // Só atualiza se houver novas mensagens
+          const existingIds = new Set(Array.from(container.querySelectorAll('.message')).map(m => m.dataset.msgId || ''));
+          
+          const unreadCount = Number(data.unreadCount || 0);
+          let unreadIndex = -1;
+          if (unreadCount > 0) {
+            let countIn = 0;
+            for (let i = data.messages.length - 1; i >= 0; i--) {
+              if (data.messages[i].direction !== 'out') {
+                countIn++;
+                if (countIn === unreadCount) { unreadIndex = i; break; }
+              }
+            }
+          }
+          data.messages.forEach((msg, idx) => {
+            const msgId = msg.id || `${msg.timestamp}_${msg.direction}`;
+            if (!existingIds.has(msgId)) {
+              const div = document.createElement('div');
+              div.className = `message ${msg.direction === 'out' ? 'out' : 'in'}`;
+              div.dataset.msgId = msgId;
+              
+              // Verifica se é mensagem de áudio
+              const isAudio = msg.text === '[áudio]';
+              const isRead = unreadIndex === -1 || idx < unreadIndex;
+              const ticksClass = isRead ? 'ticks read' : 'ticks';
+              const hasFile = !!msg.fileId;
+              const isPdf = hasFile && String(msg.fileType || '').includes('pdf');
+              const fileName = msg.fileName || 'arquivo.pdf';
+              
+              let contentHtml2 = '';
+              if (isAudio) {
+                contentHtml2 = `
+                  <div class=\"audio-message\" data-audio-id=\"${escapeHtml(msg.audioId || '')}\"> 
+                    <button class=\"audio-btn-play\" onclick=\"playAudio(this)\">▶️</button>
+                    <div class=\"audio-waveform\">
+                      ${Array(20).fill(0).map(() => `
+                        <div class=\\\"audio-waveform-bar\\\" style=\\\"height: ${10 + Math.random() * 20}px\\\"></div>
+                      `).join('')}
+                    </div>
+                    <div class=\"audio-duration\">--:--</div>
+                  </div>`;
+              } else if (hasFile) {
+                contentHtml2 = `
+                  <a class=\"attachment\" href=\"/api/files/${encodeURIComponent(msg.fileId)}\" target=\"_blank\" rel=\"noopener\">
+                    <div class=\"icon\">📄</div>
+                    <div class=\"name\" title=\"${escapeHtml(fileName)}\">${escapeHtml(fileName)}</div>
+                  </a>
+                  <div class=\"message-text\">${escapeHtml((msg.text || '').replace(/\\[arquivo\\]\\s*/i, ''))}</div>`;
+              } else if (isPdf) {
+                contentHtml2 = `
+                  <div class=\"attachment\">
+                    <div class=\"icon\">📄</div>
+                    <div class=\"name\" title=\"${escapeHtml(fileName)}\">${escapeHtml(fileName)}</div>
+                  </div>
+                  <div class=\"message-text\">${escapeHtml((msg.text || '').replace(/\\[arquivo\\]\\s*/i, ''))}</div>`;
+              } else {
+                contentHtml2 = `<div class=\"message-text\">${escapeHtml(msg.text || '')}</div>`;
+              }
+
+              div.innerHTML = `
+                <div class=\"message-bubble\">
+                  ${contentHtml2}
+                  <div class=\"message-meta\">
+                    <span class=\"message-time\">${formatTime(msg.timestamp)}</span>
+                    <span class=\"${ticksClass}\" title=\"${isRead ? 'Lida' : 'Não lida'}\">
+                      <span class=\"tick\"></span><span class=\"tick\"></span>
+                    </span>
+                  </div>
+                </div>
+              `;
+              container.appendChild(div);
+              
+              // Scroll suave só para novas mensagens
+              setTimeout(() => {
+                container.scrollTop = container.scrollHeight;
+              }, 100);
+            }
+          });
+        }
+        
+        // Atualiza botão
+        const markReadBtn = document.getElementById('markRead');
+        markReadBtn.disabled = data.unreadCount === 0;
+        markReadBtn.textContent = data.unreadCount > 0 ? 
+          `✓ Marcar como lido (${data.unreadCount})` : 
+          '✓ Marcar como lido';
+          
+      } catch (e) {
+        console.error('Erro ao carregar mensagens:', e);
+      }
+    }
+
+    async function markRead() {
+      if (!currentChatId) return;
+      
+      try {
+        await fetchJSON('/api/chats/' + encodeURIComponent(currentChatId) + '/mark-read', { method: 'POST' });
+        await loadChats();
+        await loadMessages();
+      } catch (e) {
+        console.error('Erro ao marcar como lido:', e);
+      }
+    }
+
+    function filterChats(searchTerm) {
+      if (!searchTerm.trim()) {
+        filteredChats = allChats;
+      } else {
+        const term = searchTerm.toLowerCase();
+        filteredChats = allChats.filter(chat => 
+          (chat.name && chat.name.toLowerCase().includes(term)) ||
+          chat.id.toLowerCase().includes(term) ||
+          (chat.lastMessage && chat.lastMessage.text.toLowerCase().includes(term))
+        );
+      }
+      renderChats(filteredChats);
+    }
+
+    async function sendMessage() {
+      const input = document.getElementById('messageInput');
+      const text = input.value.trim();
+      const sendBtn = document.getElementById('sendBtn');
+      
+      if (!text || !currentChatId) return;
+      
+      // Desabilita botão e input
+      sendBtn.disabled = true;
+      input.disabled = true;
+      sendBtn.innerHTML = '<div class="loading"></div> Enviando...';
+      
+      try {
+        const response = await fetch(`/api/chats/${encodeURIComponent(currentChatId)}/send`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ text })
+        });
+        
+        if (!response.ok) {
+          const error = await response.json();
+          throw new Error(error.error || 'Erro ao enviar');
+        }
+        
+        // Limpa input
+        input.value = '';
+        
+        // Recarrega mensagens
+        await loadMessages();
+        
+      } catch (e) {
+        console.error('Erro ao enviar:', e);
+        alert('Erro ao enviar mensagem: ' + e.message);
+      } finally {
+        sendBtn.disabled = false;
+        input.disabled = false;
+        sendBtn.innerHTML = '<span>Enviar</span>';
+        input.focus();
+      }
+    }
+
+    let mediaRecorder = null;
+    let audioChunks = [];
+    let recordingStartTime = null;
+    let recordingTimer = null;
+    let savedStream = null; // Mantém o stream salvo para reutilizar
+
+    async function startRecording() {
+      if (!currentChatId) {
+        alert('Selecione uma conversa primeiro');
+        return;
+      }
+
+      try {
+        // Usa stream salvo se existir
+        let stream = savedStream;
+        
+        if (!stream) {
+          // Solicita permissão apenas uma vez
+          stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+          savedStream = stream; // Salva para reutilizar
+        }
+        
+        // Tenta diferentes codecs suportados
+        let mimeType = 'audio/webm;codecs=opus';
+        if (!MediaRecorder.isTypeSupported(mimeType)) {
+          mimeType = 'audio/webm';
+        }
+        
+        mediaRecorder = new MediaRecorder(stream, {
+          mimeType: mimeType
+        });
+        
+        audioChunks = [];
+        recordingStartTime = Date.now();
+
+        mediaRecorder.ondataavailable = (e) => {
+          if (e.data.size > 0) {
+            audioChunks.push(e.data);
+          }
+        };
+
+        mediaRecorder.onstop = () => {
+          // NÃO para os tracks, deixa ativo para reutilizar
+        };
+
+        // Inicia gravação
+        mediaRecorder.start(100); // Coleta chunks a cada 100ms
+        console.log('Gravação iniciada, estado:', mediaRecorder.state);
+        
+        // Mostra controles de gravação
+        document.getElementById('messageInput').style.display = 'none';
+        document.getElementById('sendBtn').style.display = 'none';
+        document.getElementById('audioRecording').style.display = 'flex';
+        document.getElementById('audioIcon').textContent = '🔴';
+        
+        // Timer de gravação
+        recordingTimer = setInterval(() => {
+          const elapsed = Math.floor((Date.now() - recordingStartTime) / 1000);
+          const mins = Math.floor(elapsed / 60).toString().padStart(2, '0');
+          const secs = (elapsed % 60).toString().padStart(2, '0');
+          document.getElementById('recordingTime').textContent = `${mins}:${secs}`;
+        }, 1000);
+
+      } catch (e) {
+        console.error('Erro ao iniciar gravação:', e);
+        alert('Erro ao acessar microfone: ' + e.message);
+      }
+    }
+
+    function stopRecording() {
+      if (recordingTimer) {
+        clearInterval(recordingTimer);
+        recordingTimer = null;
+      }
+      
+      document.getElementById('messageInput').style.display = 'block';
+      document.getElementById('sendBtn').style.display = 'block';
+      document.getElementById('audioRecording').style.display = 'none';
+      document.getElementById('audioIcon').textContent = '🎤';
+      document.getElementById('recordingTime').textContent = '00:00';
+    }
+    
+    // Limpa o stream quando sair da página
+    window.addEventListener('beforeunload', () => {
+      if (savedStream) {
+        savedStream.getTracks().forEach(track => track.stop());
+      }
+    });
+
+    async function sendRecordedAudio() {
+      // Para a gravação antes de enviar
+      if (mediaRecorder && mediaRecorder.state !== 'inactive') {
+        mediaRecorder.stop();
+      }
+      
+      // Aguarda um pouco para garantir que os chunks estão prontos
+      await new Promise(resolve => setTimeout(resolve, 500));
+      
+      if (!audioChunks.length) {
+        stopRecording();
+        audioChunks = [];
+        return;
+      }
+      
+      // Mostra loading
+      const sendBtn = document.getElementById('sendAudio');
+      const originalText = sendBtn.textContent;
+      sendBtn.textContent = '⏳ Enviando...';
+      sendBtn.disabled = true;
+      
+      try {
+        const audioBlob = new Blob(audioChunks, { type: 'audio/webm' });
+        
+        if (audioBlob.size === 0) {
+          stopRecording();
+          audioChunks = [];
+          return;
+        }
+        
+        // Converte para OGG que o WhatsApp aceita melhor
+        const formData = new FormData();
+        formData.append('audio', audioBlob, 'audio.ogg');
+        
+        const response = await fetch(`/api/chats/${encodeURIComponent(currentChatId)}/send-audio`, {
+          method: 'POST',
+          body: formData
+        });
+        
+        if (!response.ok) {
+          const error = await response.json();
+          throw new Error(error.error || 'Erro ao enviar áudio');
+        }
+        
+        await loadMessages();
+        
+      } catch (e) {
+        console.error('❌ Erro ao enviar áudio:', e);
+      } finally {
+        sendBtn.textContent = originalText;
+        sendBtn.disabled = false;
+        stopRecording();
+        audioChunks = [];
+      }
+    }
+
+    function cancelRecording() {
+      audioChunks = [];
+      stopRecording();
+    }
+
+    // Função para reproduzir áudio
+    async function playAudio(button) {
+      const messageDiv = button.closest('.message');
+      const msgId = messageDiv.dataset.msgId;
+      const isPlaying = button.dataset.playing === 'true';
+      
+      if (isPlaying) {
+        // Para a reprodução
+        if (window.currentAudio) {
+          window.currentAudio.pause();
+          window.currentAudio = null;
+        }
+        button.dataset.playing = 'false';
+        button.textContent = '▶️';
+        return;
+      }
+      
+      try {
+        // Para qualquer áudio anterior
+        if (window.currentAudio) {
+          window.currentAudio.pause();
+          window.currentAudio = null;
+        }
+        
+        // Busca o audioId da mensagem
+        const audioMessage = messageDiv.querySelector('.audio-message');
+        const audioId = audioMessage ? audioMessage.dataset.audioId : null;
+        if (!audioId) {
+          console.error('AudioId não encontrado');
+          alert('Erro: ID do áudio não encontrado');
+          return;
+        }
+        
+        // Cria URL para baixar o áudio
+        const audioUrl = `/api/chats/${encodeURIComponent(currentChatId)}/audio/${encodeURIComponent(audioId)}`;
+        const audio = new Audio(audioUrl);
+        
+        window.currentAudio = audio;
+        button.dataset.playing = 'true';
+        button.textContent = '⏸️';
+        
+        audio.onended = () => {
+          button.dataset.playing = 'false';
+          button.textContent = '▶️';
+          window.currentAudio = null;
+        };
+        
+        audio.onerror = () => {
+          button.dataset.playing = 'false';
+          button.textContent = '▶️';
+          window.currentAudio = null;
+        };
+        
+        await audio.play();
+      } catch (e) {
+        console.error('Erro ao reproduzir áudio:', e);
+        button.dataset.playing = 'false';
+        button.textContent = '▶️';
+      }
+    }
+
+    // Event listeners
+    document.getElementById('markRead').addEventListener('click', markRead);
+    document.getElementById('searchInput').addEventListener('input', (e) => {
+      filterChats(e.target.value);
+    });
+    document.getElementById('sendBtn').addEventListener('click', sendMessage);
+    document.getElementById('audioBtn').addEventListener('click', startRecording);
+    document.getElementById('sendAudio').addEventListener('click', sendRecordedAudio);
+    document.getElementById('cancelAudio').addEventListener('click', cancelRecording);
+    document.getElementById('menuToggle').addEventListener('click', toggleSidebar);
+    
+    // Enter para enviar
+    document.getElementById('messageInput').addEventListener('keypress', (e) => {
+      if (e.key === 'Enter' && !e.shiftKey) {
+        e.preventDefault();
+        sendMessage();
+      }
+    });
+
+    // Auto-refresh silencioso (sem recarregar tudo)
+    setInterval(() => loadChats(true), 5000);
+    setInterval(() => {
+      if (currentChatId) loadMessages(true);
+    }, 5000);
+
+    // Inicialização
+    loadChats();
+  </script>
+</body>
+</html>
+
+
