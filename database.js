@@ -216,16 +216,29 @@ class DatabaseStore {
      * Verifica se já existe uma mensagem de saída recente com mesmo texto
      * para evitar duplicidade quando capturamos mensagens enviadas pelo WhatsApp.
      */
-    hasSimilarRecentOutgoing(chatId, text, windowMs = 5000) {
+    hasSimilarRecentOutgoing(chatId, text, windowMs = 10000) {
         try {
             const threshold = Date.now() - windowMs;
+            const trimmedText = (text || '').trim();
+            
+            // Verifica exatamente o texto
             const stmt = db.prepare(`
                 SELECT 1 FROM messages
                 WHERE chat_id = ? AND direction = 'out' AND content = ? AND timestamp >= ?
                 LIMIT 1
             `);
-            const row = stmt.get(chatId, text || '', threshold);
-            return !!row;
+            const row = stmt.get(chatId, trimmedText, threshold);
+            if (row) return true;
+            
+            // Verifica se há mensagem muito similar (sem diferenças de espaços/case)
+            const stmtSimilar = db.prepare(`
+                SELECT 1 FROM messages
+                WHERE chat_id = ? AND direction = 'out' AND timestamp >= ?
+                AND LOWER(TRIM(content)) = LOWER(?)
+                LIMIT 1
+            `);
+            const rowSimilar = stmtSimilar.get(chatId, threshold, trimmedText);
+            return !!rowSimilar;
         } catch (e) {
             return false;
         }

@@ -31,7 +31,8 @@ class ZcAuthService {
                 headers: {
                     'Content-Type': 'application/x-www-form-urlencoded',
                     'X-Request-ID': this.xRequestId
-                }
+                },
+                timeout: 15000 // 15 segundos de timeout
             });
             
             if (response.data && response.data.access_token) {
@@ -92,7 +93,8 @@ class ZcAuthService {
                     'Authorization': `Bearer ${token}`,
                     'Content-Type': 'application/json',
                     'X-Request-ID': this.xRequestId
-                }
+                },
+                timeout: 30000 // 30 segundos de timeout para requisições
             };
 
             if (data) {
@@ -107,6 +109,12 @@ class ZcAuthService {
             return response.data;
 
         } catch (error) {
+            // Tratamento melhorado de erros
+            if (error.code === 'ECONNABORTED' || error.message.includes('timeout')) {
+                console.error(`⏱️ Timeout na requisição ${method.toUpperCase()} ${endpoint}`);
+                throw new Error('Timeout: API não respondeu a tempo');
+            }
+            
             console.error(`❌ Erro na requisição ${method.toUpperCase()} ${endpoint}:`, error.message);
             
             if (error.response) {

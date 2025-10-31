@@ -347,6 +347,21 @@ class App {
                 res.sendFile(path.join(__dirname, 'dashboard.html'));
             });
 
+            // QR Code atual (se disponível)
+            app.get('/api/session/qr', (req, res) => {
+                try {
+                    if (!this.bot || typeof this.bot.getLastQr !== 'function') {
+                        return res.status(503).json({ error: 'unavailable' });
+                    }
+                    const qr = this.bot.getLastQr();
+                    if (!qr) return res.status(404).json({ error: 'no_qr' });
+                    res.setHeader('Content-Type', qr.contentType || 'image/png');
+                    return res.send(qr.buffer);
+                } catch (e) {
+                    return res.status(500).json({ error: 'internal_error' });
+                }
+            });
+
             app.listen(PORT, () => {
                 console.log(`📊 Painel iniciado em http://localhost:${PORT}`);
             });
