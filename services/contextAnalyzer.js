@@ -276,28 +276,34 @@ class ContextAnalyzer {
             return 'request_payment';
         }
         
-        // 2. Confirmação de pagamento (SEM problemas mencionados)
-        // Verifica primeiro se tem problemas indicados
-        const problemIndicators = [
+        // 1.9 PAGAMENTO COM PROBLEMA - "já paguei mas não liberou"
+        const paymentDoneKeywords = ['já paguei', 'ja paguei', 'paguei', 'fiz o pagamento', 'realizei o pagamento', 'efetuei o pagamento', 'comprovante'];
+        const paymentProblemKeywords = [
             'ainda n', 'ainda não', 'ainda nao', 'ainda não liberou', 'ainda nao liberou',
             'não liberou', 'nao liberou', 'n liberou', 'não funciona', 'nao funciona',
-            'n funciona', 'não voltou', 'nao voltou', 'n voltou', 'não caiu', 'nao caiu',
+            'n funciona', 'não voltou', 'nao voltou', 'n voltou'
+        ];
+        const hasPaymentDone = paymentDoneKeywords.some(kw => text.includes(kw));
+        const hasPaymentProblem = paymentProblemKeywords.some(kw => text.includes(kw));
+        
+        if (hasPaymentDone && hasPaymentProblem) {
+            return 'support_paid_not_working';
+        }
+        
+        // 2. Confirmação de pagamento (SEM problemas mencionados)
+        const otherProblemIndicators = [
             'problema', 'erro', 'não deu certo', 'nao deu certo', 'n deu certo',
             'mas ainda', 'mas n', 'mas não', 'mas nao', 'porém ainda', 'porém não',
             'e ainda', 'e n', 'e não', 'e nao', 'mas não funciona', 'mas nao funciona'
         ];
-        const hasProblem = problemIndicators.some(pi => text.includes(pi));
+        const hasOtherProblem = otherProblemIndicators.some(pi => text.includes(pi));
         
-        // Se tem problema, NÃO é confirmação simples
-        if (hasProblem) {
+        // Se tem problema mas não é paymentProblem (mais genérico), retorna unclear
+        if (hasOtherProblem && hasPaymentDone) {
             return 'unclear'; // Deixa para atendente humano
         }
         
-        const paymentDone = [
-            'já paguei', 'ja paguei', 'paguei', 'fiz o pagamento', 
-            'realizei o pagamento', 'efetuei o pagamento', 'comprovante'
-        ];
-        if (paymentDone.some(kw => text.includes(kw))) {
+        if (paymentDoneKeywords.some(kw => text.includes(kw))) {
             return 'confirm_payment';
         }
 
@@ -313,20 +319,34 @@ class ContextAnalyzer {
             return 'inform_presential';
         }
         
-        // 2.1 Problemas técnicos de internet (ignorar - não é sobre pagamento)
-        const technicalIssues = [
-            'wi-fi não funciona', 'wifi não funciona', 'wi fi não funciona',
-            'internet caiu', 'internet cai', 'caiu a internet',
-            'internet lenta', 'internet muito lenta', 'está lenta',
-            'sem sinal', 'sem internet', 'sem conexão',
+        // 2.1 Problemas técnicos de internet - Internet lenta
+        const slowInternetKeywords = [
+            'internet lenta', 'internet muito lenta', 'está lenta', 'devagar',
+            'wi-fi lento', 'wifi lento', 'wi fi lento', 'internet travando'
+        ];
+        if (slowInternetKeywords.some(kw => text.includes(kw))) {
+            return 'support_slow';
+        }
+        
+        // 2.2 Problemas técnicos de internet - Internet caiu
+        const droppedInternetKeywords = [
+            'internet caiu', 'internet cai', 'caiu a internet', 'sem internet',
+            'internet parou', 'parou de funcionar', 'sem sinal', 'sem conexão',
+            'wi-fi não funciona', 'wifi não funciona', 'wi fi não funciona'
+        ];
+        if (droppedInternetKeywords.some(kw => text.includes(kw))) {
+            return 'support_dropped';
+        }
+        
+        // 2.3 Problemas técnicos gerais
+        const generalTechnicalIssues = [
             'wi-fi desconecta', 'wifi desconecta', 'desconectando',
             'problema com internet', 'internet dando problema',
             'repetidor', 'roteador', 'equipamento',
-            'internet parou', 'parou de funcionar',
-            'wi-fi travando', 'wifi travando', 'está travando'
+            'wi-fi travando', 'wifi travando'
         ];
-        if (technicalIssues.some(kw => text.includes(kw))) {
-            return 'inform_presential'; // Usa o mesmo tratamento: ignorar
+        if (generalTechnicalIssues.some(kw => text.includes(kw))) {
+            return 'support_technical';
         }
 
         // Detecção inteligente adicional para contexto combinado (só se ainda não detectou nada)

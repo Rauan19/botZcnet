@@ -24,11 +24,32 @@ class WhatsAppBot {
         this.userStates = new Map(); // guarda último contexto por usuário (clientId, serviceId, billId)
         this.lastQrBase64 = null; // Guarda último QR em base64 (data URL)
         this.humanAttending = new Map(); // guarda chats onde atendimento humano está ativo (chatId -> true/false)
+        this.humanAttendingTime = new Map(); // guarda quando atendimento humano foi ativado (chatId -> timestamp)
         this.processedMessages = new Map(); // cache de mensagens processadas para evitar duplicação (messageId -> timestamp)
         this.userResponseRate = new Map(); // controle de rate limiting por usuário (chatId -> {lastResponse, count})
+        this.inSupportSubmenu = new Map(); // guarda se chat está no submenu de suporte (chatId -> true/false)
+        
+        // Sistema de memória de contexto robusto
+        this.conversationContext = new Map(); // guarda contexto completo da conversa por chatId
+        // Estrutura: {
+        //   currentMenu: 'main' | 'payment' | 'support' | 'support_sub' | 'other',
+        //   currentStep: 'waiting_cpf' | 'waiting_pix' | 'waiting_option' | 'waiting_payment_option' | 'processing_cpf' | null,
+        //   lastIntent: string,
+        //   lastAction: string,
+        //   conversationHistory: [], // últimas intenções/ações
+        //   lastMessage: string,
+        //   lastResponse: string,
+        //   updatedAt: timestamp
+        // }
         
         // Limpeza automática de cache a cada 10 minutos
         setInterval(() => this.cleanupCache(), 10 * 60 * 1000);
+        
+        // Reativação automática de atendimentos DESABILITADA - apenas reativação manual pelo painel
+        // setInterval(() => this.cleanupAbandonedAttendances(), 1 * 60 * 1000);
+        
+        // Limpeza automática de contextos antigos após 30 minutos de inatividade
+        setInterval(() => this.cleanupOldContexts(), 30 * 60 * 1000);
     }
 
     /**
@@ -192,30 +213,40 @@ class WhatsAppBot {
         // Recebimento de mensagens
         client.onMessage(async (message) => {
             try {
+                console.log('📥 MENSAGEM RECEBIDA:', { 
+                    id: message.id, 
+                    from: message.from, 
+                    body: message.body?.substring(0, 50),
+                    isGroupMsg: message.isGroupMsg,
+                    fromMe: message.fromMe
+                });
+                
                 // Verificação de duplicação: ignora mensagem se já foi processada
                 const messageId = message.id;
                 if (this.isMessageProcessed(messageId)) {
+                    console.log('⏭️ Mensagem já processada (duplicada), ignorando...');
                     return; // Mensagem já processada, ignora silenciosamente
                 }
                 
                 // Marca mensagem como processada (guarda por 10 minutos)
                 this.processedMessages.set(messageId, Date.now());
                 
-                // Rate limiting: evita spam de respostas
-                if (!this.checkRateLimit(message.from)) {
-                    return; // Rate limit atingido, ignora silenciosamente
-                }
+                console.log('✅ Mensagem passou pelas verificações iniciais, processando...');
                 
-                console.log('📥 onMessage bruto:', JSON.stringify({ from: message.from, isGroupMsg: message.isGroupMsg, body: message.body }));
                 // Ignora grupos: bot atende só conversas privadas
-                if (message.isGroupMsg) {
+                if (message.isGroupMsg === true || message.from?.includes('@g.us')) {
                     console.log('🤖 Mensagem de grupo ignorada (bot atende apenas conversas privadas).');
                     return;
                 }
                 
-                // Ignora mensagens de status (stories/status do WhatsApp)
-                if (message.isStatus === true || message.from === 'status@broadcast' || 
-                    message.from?.includes('status') || message.isStory || message.type === 'status') {
+                // Ignora mensagens de status/stories (várias verificações para garantir)
+                if (message.isStatus === true || 
+                    message.from === 'status@broadcast' || 
+                    message.from?.includes('status') || 
+                    message.isStory === true || 
+                    message.type === 'status' ||
+                    message.type === 'ptt' && message.from?.includes('broadcast') ||
+                    message.chatId?.includes('status@')) {
                     console.log('📊 Mensagem de story/status ignorada.');
                     return;
                 }
@@ -338,114 +369,425 @@ class WhatsAppBot {
                 return;
             }
 
-                // Detecta CPF/documento (11+ dígitos) e envia boleto mais recente
+                // Detecta CPF/documento (11+ dígitos)
                 const doc = this.extractDocument(body);
                 if (doc) {
-                    // Não envia mensagem de status - busca direto para ser mais rápido e silencioso
+                    const currentContext = this.getConversationContext(message.from);
+                    
+                    // Verifica se está no fluxo de pagamento aguardando CPF
+                    if (currentContext.currentMenu === 'payment' && currentContext.currentStep === 'waiting_cpf') {
+                        // Atualiza contexto: CPF recebido, processando
+                        this.updateConversationContext(message.from, {
+                            currentStep: 'processing_cpf',
+                            lastAction: 'received_cpf'
+                        });
+                        
+                        // Responde imediatamente que está processando
+                        try {
+                            await this.sendAudioResponse(message.from, 'Processando CPF, aguarde...', false);
+                        } catch (_) {}
+                        
+                        try {
+                            // Busca cliente e serviços com timeout
+                            const cli = await Promise.race([
+                                zcClientService.getClientByDocument(doc),
+                                new Promise((_, reject) => setTimeout(() => reject(new Error('timeout')), 15000))
+                            ]);
+                            
+                            if (!cli || !cli.id) {
+                                throw new Error('Nenhum cliente encontrado');
+                            }
+                            
+                            const services = await Promise.race([
+                                zcClientService.getClientServices(cli.id),
+                                new Promise((_, reject) => setTimeout(() => reject(new Error('timeout')), 15000))
+                            ]);
+                            
+                            if (!services || services.length === 0) {
+                                await this.sendAudioResponse(message.from, 'Cliente encontrado mas sem serviços ativos.', true);
+                                return;
+                            }
+                            const activeService = services.find(s => s.status === 'ativo') || services[0];
+
+                            // Busca contas e escolhe a mais recente
+                            const bills = await Promise.race([
+                                zcBillService.getBills(cli.id, activeService.id, 'INTERNET'),
+                                new Promise((_, reject) => setTimeout(() => reject(new Error('timeout')), 15000))
+                            ]);
+                            
+                            if (!bills || bills.length === 0) {
+                                await this.sendAudioResponse(message.from, 'Nenhuma cobrança encontrada para este cliente.', true);
+                                return;
+                            }
+                            
+                            // Filtra boletos: aceita apenas não pagos (dataPagamento null e status indica em aberto)
+                            const filteredBills = bills.filter(bill => {
+                                // Aceita boleto que tenha ID válido
+                                if (!bill || !bill.id) {
+                                    return false;
+                                }
+                                
+                                // Verifica se está pago pelo campo dataPagamento
+                                const dataPagamento = bill.dataPagamento || bill.data_pagamento;
+                                if (dataPagamento !== null && dataPagamento !== undefined && dataPagamento !== '') {
+                                    return false;
+                                }
+                                
+                                // Verifica se está pago pelo campo status
+                                const statusDescricao = (bill.statusDescricao || bill.status_descricao || '').toLowerCase();
+                                
+                                // Status 0 geralmente significa "Em Aberto", outros valores podem indicar pago
+                                // Mas vamos ser conservadores: se statusDescricao indica pago, exclui
+                                if (statusDescricao.includes('pago') || statusDescricao.includes('quitado') || 
+                                    statusDescricao.includes('liquidado') || statusDescricao.includes('cancelado')) {
+                                    return false;
+                                }
+                                
+                                return true;
+                            });
+                            
+                            // Se não encontrou boletos válidos, retorna erro
+                            if (filteredBills.length === 0) {
+                                await this.sendAudioResponse(message.from, 'Não há nenhuma cobrança em atraso. Entre em contato conosco caso tenha dúvidas.', true);
+                                return;
+                            }
+                            
+                            // Ordena priorizando boletos vencidos ou do mês atual, depois futuros
+                            const now = new Date();
+                            now.setHours(0, 0, 0, 0);
+                            const currentMonth = now.getMonth();
+                            const currentYear = now.getFullYear();
+                            
+                            const latest = filteredBills.sort((a, b) => {
+                                const dateA = new Date(a.dataVencimento || a.data_vencimento || a.vencimento || 0);
+                                const dateB = new Date(b.dataVencimento || b.data_vencimento || b.vencimento || 0);
+                                
+                                if (isNaN(dateA.getTime()) || isNaN(dateB.getTime())) {
+                                    return isNaN(dateA.getTime()) ? 1 : -1;
+                                }
+                                
+                                dateA.setHours(0, 0, 0, 0);
+                                dateB.setHours(0, 0, 0, 0);
+                                
+                                const timeA = dateA.getTime();
+                                const timeB = dateB.getTime();
+                                
+                                // Categoriza cada boleto: 1=vencido, 2=mês atual, 3=futuro
+                                const getCategory = (date) => {
+                                    if (date < now) return 1; // Vencido
+                                    const month = date.getMonth();
+                                    const year = date.getFullYear();
+                                    if (year === currentYear && month === currentMonth) return 2; // Mês atual
+                                    return 3; // Futuro
+                                };
+                                
+                                const catA = getCategory(dateA);
+                                const catB = getCategory(dateB);
+                                
+                                // Primeiro ordena por categoria (vencido < atual < futuro)
+                                if (catA !== catB) {
+                                    return catA - catB;
+                                }
+                                
+                                // Dentro da mesma categoria, ordena do mais recente para o mais antigo
+                                return timeB - timeA;
+                            })[0];
+                            
+                            // Guarda contexto do usuário (clientId, serviceId, billId)
+                            this.userStates.set(message.from, {
+                                clientId: cli.id,
+                                serviceId: activeService.id,
+                                billId: latest.id,
+                                clientName: cli?.nome || 'cliente',
+                                lastActivity: Date.now()
+                            });
+
+                            // PERGUNTA se quer PIX ou BOLETO
+                            const paymentOptionMsg = `*CPF CONFIRMADO: ${cli?.nome || 'Cliente'}*
+
+Como você deseja pagar?
+
+*1️⃣ PIX*
+
+*2️⃣ BOLETO*
+
+⏱️ *Liberação em até 5 minutos após o pagamento*
+
+Digite o *número* da opção`;
+                            
+                            // Atualiza contexto: aguardando escolha PIX ou boleto
+                            this.updateConversationContext(message.from, {
+                                currentStep: 'waiting_payment_option',
+                                lastAction: 'cpf_confirmed',
+                                lastResponse: paymentOptionMsg
+                            });
+                            
+                            await this.sendKeepingUnread(() => client.sendText(message.from, paymentOptionMsg), message.from, paymentOptionMsg);
+                            return;
+                            
+                        } catch (e) {
+                            console.error('Erro ao buscar cliente por CPF:', e?.message || e);
+                            let errorMessage = 'Não encontrei cliente com este CPF. Verifique e envie novamente.';
+                            if (e?.message && (e.message.includes('timeout') || e.message.includes('Timeout'))) {
+                                errorMessage = 'O servidor demorou para responder. Tente novamente em instantes ou envie menu para voltar ao início.';
+                            } else if (e?.message && e.message.includes('Nenhum cliente encontrado')) {
+                                errorMessage = 'CPF não encontrado. Verifique e envie novamente.';
+                            }
+                            // Garante que sempre responde, mesmo em caso de erro
+                            try {
+                                await this.sendAudioResponse(message.from, errorMessage, true);
+                            } catch (sendError) {
+                                console.error('Erro ao enviar mensagem de erro:', sendError);
+                                // Tenta enviar como texto se áudio falhar
+                                try {
+                                    await this.sendKeepingUnread(() => client.sendText(message.from, errorMessage), message.from, errorMessage);
+                                } catch (_) {}
+                            }
+                            return;
+                        }
+                    }
+                    
+                    // Se não está no fluxo de pagamento, processa como antes (compatibilidade)
+                    // Busca e envia boleto direto (comportamento antigo)
+                    // Responde imediatamente que está processando
                     try {
-                        // Busca cliente e serviços
-                        const cli = await zcClientService.getClientByDocument(doc);
-                        const services = await zcClientService.getClientServices(cli.id);
+                        await this.sendAudioResponse(message.from, 'Processando CPF, aguarde...', false);
+                    } catch (_) {}
+                    
+                    try {
+                        const cli = await Promise.race([
+                            zcClientService.getClientByDocument(doc),
+                            new Promise((_, reject) => setTimeout(() => reject(new Error('timeout')), 15000))
+                        ]);
+                        
+                        if (!cli || !cli.id) {
+                            throw new Error('Nenhum cliente encontrado');
+                        }
+                        
+                        const services = await Promise.race([
+                            zcClientService.getClientServices(cli.id),
+                            new Promise((_, reject) => setTimeout(() => reject(new Error('timeout')), 15000))
+                        ]);
+                        
                         if (!services || services.length === 0) {
-                            const out = '*❌ CLIENTE ENCONTRADO MAS SEM SERVIÇOS ATIVOS*';
-                            // Responde sempre com áudio quando é sobre pagamento/internet
-                            await this.sendAudioResponse(message.from, 
-                                'Cliente encontrado mas sem serviços ativos.',
-                                true
-                            );
-                return;
-            }
+                            await this.sendAudioResponse(message.from, 'Cliente encontrado mas sem serviços ativos.', true);
+                            return;
+                        }
                         const activeService = services.find(s => s.status === 'ativo') || services[0];
-
-                        // Busca contas e escolhe a mais recente
-                        const bills = await zcBillService.getBills(cli.id, activeService.id, 'INTERNET');
+                        
+                        const bills = await Promise.race([
+                            zcBillService.getBills(cli.id, activeService.id, 'INTERNET'),
+                            new Promise((_, reject) => setTimeout(() => reject(new Error('timeout')), 15000))
+                        ]);
+                        
                         if (!bills || bills.length === 0) {
-                            const out = '*❌ NENHUMA COBRANÇA ENCONTRADA PARA ESTE CLIENTE*';
-                            // Responde sempre com áudio quando é sobre pagamento/internet
-                            await this.sendAudioResponse(message.from, 
-                                'Nenhuma cobrança encontrada para este cliente.',
-                                true
-                            );
-                return;
-            }
-                        const latest = bills.sort((a, b) => new Date(b.data_vencimento || b.vencimento) - new Date(a.data_vencimento || a.vencimento))[0];
-
-                        // Guarda contexto do usuário para PIX posterior
+                            await this.sendAudioResponse(message.from, 'Nenhuma cobrança encontrada para este cliente.', true);
+                            return;
+                        }
+                        
+                        // Filtra boletos: aceita apenas não pagos (dataPagamento null e status indica em aberto)
+                        const filteredBills = bills.filter(bill => {
+                            // Aceita boleto que tenha ID válido
+                            if (!bill || !bill.id) {
+                                return false;
+                            }
+                            
+                            // Verifica se está pago pelo campo dataPagamento
+                            const dataPagamento = bill.dataPagamento || bill.data_pagamento;
+                            if (dataPagamento !== null && dataPagamento !== undefined && dataPagamento !== '') {
+                                return false;
+                            }
+                            
+                            // Verifica se está pago pelo campo status
+                            const statusDescricao = (bill.statusDescricao || bill.status_descricao || '').toLowerCase();
+                            
+                            // Status 0 geralmente significa "Em Aberto", outros valores podem indicar pago
+                            // Mas vamos ser conservadores: se statusDescricao indica pago, exclui
+                            if (statusDescricao.includes('pago') || statusDescricao.includes('quitado') || 
+                                statusDescricao.includes('liquidado') || statusDescricao.includes('cancelado')) {
+                                return false;
+                            }
+                            
+                            return true;
+                        });
+                        
+                        // Se não encontrou boletos válidos, retorna erro
+                        if (filteredBills.length === 0) {
+                            await this.sendAudioResponse(message.from, 'Não há nenhuma cobrança em atraso. Entre em contato conosco caso tenha dúvidas.', true);
+                            return;
+                        }
+                        
+                        // Ordena priorizando boletos vencidos ou do mês atual, depois futuros
+                        const now = new Date();
+                        now.setHours(0, 0, 0, 0);
+                        const currentMonth = now.getMonth();
+                        const currentYear = now.getFullYear();
+                        
+                        const latest = filteredBills.sort((a, b) => {
+                            const dateA = new Date(a.dataVencimento || a.data_vencimento || a.vencimento || 0);
+                            const dateB = new Date(b.dataVencimento || b.data_vencimento || b.vencimento || 0);
+                            
+                            if (isNaN(dateA.getTime()) || isNaN(dateB.getTime())) {
+                                return isNaN(dateA.getTime()) ? 1 : -1;
+                            }
+                            
+                            dateA.setHours(0, 0, 0, 0);
+                            dateB.setHours(0, 0, 0, 0);
+                            
+                            const timeA = dateA.getTime();
+                            const timeB = dateB.getTime();
+                            
+                            // Categoriza cada boleto: 1=vencido, 2=mês atual, 3=futuro
+                            const getCategory = (date) => {
+                                if (date < now) return 1; // Vencido
+                                const month = date.getMonth();
+                                const year = date.getFullYear();
+                                if (year === currentYear && month === currentMonth) return 2; // Mês atual
+                                return 3; // Futuro
+                            };
+                            
+                            const catA = getCategory(dateA);
+                            const catB = getCategory(dateB);
+                            
+                            // Primeiro ordena por categoria (vencido < atual < futuro)
+                            if (catA !== catB) {
+                                return catA - catB;
+                            }
+                            
+                            // Dentro da mesma categoria, ordena do mais recente para o mais antigo
+                            return timeB - timeA;
+                        })[0];
+                        
                         this.userStates.set(message.from, {
                             clientId: cli.id,
                             serviceId: activeService.id,
                             billId: latest.id,
                             clientName: cli?.nome || 'cliente',
-                            lastActivity: Date.now() // Para limpeza automática
+                            lastActivity: Date.now()
                         });
 
-                        // Gera PDF do boleto
                         const pdfPath = await zcBillService.generateBillPDF(cli.id, activeService.id, latest.id);
-                            const caption = `*📄 BOLETO DE ${cli?.nome || 'cliente'}*\n\n*Se preferir pagar com PIX responda pix*`;
-                            
-                            // SEMPRE responde com áudio quando é sobre pagamento/internet
-                            await this.sendAudioResponse(message.from, 
-                                `Boleto de ${cli?.nome || 'cliente'}. Se preferir pagar com PIX responda pix.`,
-                                true
-                            );
-                            
-                            // Envia o PDF do boleto
-                            await this.sendKeepingUnread(() => client.sendFile(message.from, pdfPath, 'boleto.pdf', caption), message.from);
+                        const caption = `*📄 BOLETO DE ${cli?.nome || 'cliente'}*\n\n*Se preferir pagar com PIX responda pix*`;
+                        
+                        this.updateConversationContext(message.from, {
+                            currentStep: 'waiting_pix',
+                            lastAction: 'sent_bill',
+                            lastResponse: caption
+                        });
+                        
+                        await this.sendAudioResponse(message.from, `Boleto de ${cli?.nome || 'cliente'}. Se preferir pagar com PIX responda pix.`, true);
+                        await this.sendKeepingUnread(() => client.sendFile(message.from, pdfPath, 'boleto.pdf', caption), message.from);
+                        
+                        // Envia mensagem para voltar ao menu após enviar boleto
+                        const backToMenuMsg = `\n\n📱 *Digite 8 para voltar ao menu*`;
+                        await this.sendKeepingUnread(() => client.sendText(message.from, backToMenuMsg), message.from, backToMenuMsg);
 
-                            // Salva uma cópia do PDF para o painel e registra metadados
-                            try {
-                                const path = require('path');
-                                const fs = require('fs');
-                                const filesDir = path.join(__dirname, 'files');
-                                if (!fs.existsSync(filesDir)) fs.mkdirSync(filesDir, { recursive: true });
-                                const fileId = `boleto_${Date.now()}_${Math.random().toString(36).slice(2)}.pdf`;
-                                const destPath = path.join(filesDir, fileId);
-                                fs.copyFileSync(pdfPath, destPath);
-                                messageStore.recordOutgoingMessage({
-                                    chatId: message.from,
-                                    text: caption, // Remove [arquivo] e mantém só o texto limpo
-                                    timestamp: Date.now(),
-                                    fileId,
-                                    fileName: 'boleto.pdf',
-                                    fileType: 'application/pdf'
-                                });
-                            } catch (_) {
-                                try { messageStore.recordOutgoingMessage({ chatId: message.from, text: '[arquivo] boleto.pdf - ' + caption, timestamp: Date.now() }); } catch (_) {}
-                            }
-                            
-                            // PAUSA O BOT após enviar boleto (cliente tem que pagar primeiro)
-                            this.humanAttending.set(message.from, true);
-                            console.log(`⏸️ Bot pausado para chat ${message.from} após enviar boleto. Cliente deve realizar pagamento.`);
-                            
-                            return;
+                        try {
+                            const path = require('path');
+                            const fs = require('fs');
+                            const filesDir = path.join(__dirname, 'files');
+                            if (!fs.existsSync(filesDir)) fs.mkdirSync(filesDir, { recursive: true });
+                            const fileId = `boleto_${Date.now()}_${Math.random().toString(36).slice(2)}.pdf`;
+                            const destPath = path.join(filesDir, fileId);
+                            fs.copyFileSync(pdfPath, destPath);
+                            messageStore.recordOutgoingMessage({
+                                chatId: message.from,
+                                text: caption,
+                                timestamp: Date.now(),
+                                fileId,
+                                fileName: 'boleto.pdf',
+                                fileType: 'application/pdf'
+                            });
+                        } catch (_) {
+                            try { messageStore.recordOutgoingMessage({ chatId: message.from, text: '[arquivo] boleto.pdf - ' + caption, timestamp: Date.now() }); } catch (_) {}
+                        }
+                        
+                        this.humanAttending.set(message.from, true);
+                        console.log(`⏸️ Bot pausado para chat ${message.from} após enviar boleto.`);
+                        return;
                     } catch (e) {
                         console.error('Erro ao buscar boleto por documento:', e?.message || e);
                         
                         // Tratamento de erros específicos
                         let errorMessage = 'Não encontrei boleto. Confira o CPF somente números ou envie menu.';
-                        if (e?.message && e.message.includes('timeout')) {
-                            errorMessage = 'O servidor demorou para responder. Tente novamente em instantes.';
+                        if (e?.message && (e.message.includes('timeout') || e.message.includes('Timeout'))) {
+                            errorMessage = 'O servidor demorou para responder. Tente novamente em instantes ou envie menu para voltar ao início.';
                         } else if (e?.message && e.message.includes('Nenhum cliente encontrado')) {
                             errorMessage = 'CPF não encontrado. Verifique e envie novamente.';
                         }
                         
-                        // Responde sempre com áudio quando é sobre pagamento/internet
-                        await this.sendAudioResponse(message.from, 
-                            errorMessage,
-                            true
-                        );
-                return;
-            }
+                        // Garante que sempre responde, mesmo em caso de erro
+                        try {
+                            await this.sendAudioResponse(message.from, errorMessage, true);
+                        } catch (sendError) {
+                            console.error('Erro ao enviar mensagem de erro:', sendError);
+                            // Tenta enviar como texto se áudio falhar
+                            try {
+                                await this.sendKeepingUnread(() => client.sendText(message.from, errorMessage), message.from, errorMessage);
+                            } catch (_) {}
+                        }
+                        return;
+                    }
                 }
 
                 // Comandos simples e palavras-chave (usa texto transcrito se for áudio)
                 const text = finalBody.trim();
                 
+            // PRIORIDADE ABSOLUTA: Verifica se cliente quer voltar ao menu (comando "menu" ou "#menu" ou "8")
+            // Isso DEVE ser verificado ANTES DE QUALQUER OUTRA COISA para funcionar sempre, independente do estado
+            const textCheck = text.trim().toLowerCase();
+            const isMenuCommand = textCheck === 'menu' || textCheck === '#menu' || textCheck.includes('menu');
+            // "8" funciona SEMPRE que o usuário digitar, independente do estado atual - ABSOLUTA PRIORIDADE
+            const isBackToMenu = textCheck === '8';
+            
+            if (isMenuCommand || isBackToMenu) {
+                console.log(`📋 Cliente solicitou menu (${isBackToMenu ? 'digite 8' : 'menu'}) - reativando bot e mostrando menu principal`);
+                
+                // Reativa o bot se estiver pausado
+                if (this.humanAttending.get(message.from) === true) {
+                    this.humanAttending.set(message.from, false);
+                    this.humanAttendingTime.delete(message.from);
+                    console.log(`🤖 Bot reativado pelo comando menu`);
+                }
+                
+                // LIMPA COMPLETAMENTE o estado do usuário para garantir que não há conflitos
+                this.inSupportSubmenu.delete(message.from);
+                this.userStates.delete(message.from); // Remove dados antigos de pagamento/CPF
+                
+                const menuMsg = `*COMO POSSO AJUDAR?*
+
+*1️⃣ PAGAMENTO / SEGUNDA VIA*
+
+*2️⃣ SUPORTE TÉCNICO*
+
+*3️⃣ FALAR COM ATENDENTE*
+
+*4️⃣ OUTRAS DÚVIDAS*
+
+Digite o *número* da opção`;
+                
+                // Atualiza contexto: menu principal - LIMPA completamente
+                this.updateConversationContext(message.from, {
+                    currentMenu: 'main',
+                    currentStep: null,
+                    lastAction: 'send_menu',
+                    lastResponse: menuMsg,
+                    lastMessage: null,
+                    lastIntent: null
+                });
+                
+                await this.sendKeepingUnread(() => client.sendText(message.from, menuMsg), message.from, menuMsg);
+                return;
+            }
+            
+            // Obtém contexto atual da conversa
+            const conversationContext = this.getConversationContext(message.from);
+            
             // Analisa intenção da mensagem com contexto de múltiplas mensagens
             let contextResult;
             try {
                 contextResult = await contextAnalyzer.analyzeContext(message.from, text);
-                console.log(`🧠 Análise de contexto: intent=${contextResult.intent}, confidence=${contextResult.confidence.toFixed(2)}, mensagens=${contextResult.messagesCount}`);
+                console.log(`🧠 Análise de contexto: intent=${contextResult.intent}, confidence=${contextResult.confidence.toFixed(2)}, mensagens=${contextResult.messagesCount}, menu=${conversationContext.currentMenu}, step=${conversationContext.currentStep}`);
             } catch (e) {
                 console.error('Erro ao analisar contexto, usando análise simples:', e);
                 // Fallback para análise simples se NLP falhar
@@ -459,17 +801,237 @@ class WhatsAppBot {
             const intent = contextResult.intent;
             const textLower = text.toLowerCase();
             
+            // Verifica se a intenção faz sentido no contexto atual
+            const isValidContext = this.isContextValid(intent, message.from, text);
+            if (!isValidContext) {
+                console.log(`⚠️ Mensagem fora de contexto detectada - intent=${intent}, menu=${conversationContext.currentMenu}, step=${conversationContext.currentStep}`);
+                // Atualiza contexto e permite se intenção é clara
+                this.updateConversationContext(message.from, {
+                    lastMessage: text,
+                    lastIntent: intent
+                });
+                // Continua o processamento mesmo se fora de contexto (pode ser cliente mudando de assunto)
+            }
+            
+            // Atualiza contexto com a mensagem atual
+            this.updateConversationContext(message.from, {
+                lastMessage: text,
+                lastIntent: intent
+            });
+            
+            // Verifica opções do menu principal (1, 2, 3, 4) - PRIORIDADE MÁXIMA após voltar ao menu
+            // IMPORTANTE: Estas verificações devem vir ANTES de todas as outras para garantir funcionamento correto
+            // Atualiza contexto para garantir que está atualizado após voltar ao menu
+            const currentContext = this.getConversationContext(message.from);
+            // Verifica se está no menu principal - considera null/undefined também como menu principal
+            const isMainMenu = currentContext.currentMenu === 'main' || 
+                               currentContext.currentMenu === null || 
+                               currentContext.currentMenu === undefined;
+            
+            if (textLower.trim() === '1' && isMainMenu) {
+                console.log(`💳 Cliente selecionou opção 1 - Pagamento`);
+                // Garante que userStates está limpo
+                this.userStates.delete(message.from);
+                const response = `*PAGAMENTO / SEGUNDA VIA*
+
+Para gerar seu boleto ou PIX, envie seu *CPF* (somente números)
+
+*# VOLTAR* ou *# FINALIZAR ATENDIMENTO*`;
+                // Atualiza contexto: menu de pagamento, aguardando CPF
+                this.updateConversationContext(message.from, {
+                    currentMenu: 'payment',
+                    currentStep: 'waiting_cpf',
+                    lastAction: 'show_payment_menu',
+                    lastResponse: response
+                });
+                await this.sendKeepingUnread(() => client.sendText(message.from, response), message.from, response);
+                return;
+            }
+            
+            if (textLower.trim() === '2' && isMainMenu) {
+                console.log(`🔧 Cliente selecionou opção 2 - Suporte técnico`);
+                // Garante que está limpo antes de entrar no submenu
+                this.userStates.delete(message.from);
+                // Define que está no submenu de suporte
+                this.inSupportSubmenu.set(message.from, true);
+                const response = `*SUPORTE TÉCNICO*
+
+*1️⃣ INTERNET LENTA*
+
+*2️⃣ SEM CONEXÃO*
+
+*3️⃣ JÁ PAGUEI*
+
+*9️⃣ FINALIZAR ATENDIMENTO*
+
+*# VOLTAR* ou *# FINALIZAR ATENDIMENTO*
+
+Digite o *número* da opção
+
+📱 *Digite 8 para voltar ao menu*`;
+                // Atualiza contexto: submenu de suporte - GARANTE que está atualizado
+                this.updateConversationContext(message.from, {
+                    currentMenu: 'support_sub',
+                    currentStep: 'waiting_option',
+                    lastAction: 'show_support_submenu',
+                    lastResponse: response,
+                    lastMessage: null,
+                    lastIntent: null
+                });
+                await this.sendKeepingUnread(() => client.sendText(message.from, response), message.from, response);
+                return;
+            }
+            
+            if (textLower.trim() === '3' && isMainMenu) {
+                console.log(`👤 Cliente selecionou opção 3 - Atendimento humano`);
+                // Pausa o bot para este chat - atendimento humano ativo
+                this.humanAttending.set(message.from, true);
+                this.humanAttendingTime.set(message.from, Date.now());
+                // Atualiza contexto: atendimento humano ativo
+                this.updateConversationContext(message.from, {
+                    currentMenu: 'main',
+                    currentStep: null,
+                    lastAction: 'human_attending_requested',
+                    lastResponse: null
+                });
+                const response = `*Estamos preparando seu atendimento, logo um atendente irá te atender.*`;
+                await this.sendKeepingUnread(() => client.sendText(message.from, response), message.from, response);
+                console.log(`⏸️ Bot pausado para chat ${message.from} - aguardando atendimento humano. Reativação apenas manual pelo painel.`);
+                return;
+            }
+            
+            if (textLower.trim() === '4' && isMainMenu) {
+                console.log(`❓ Cliente selecionou opção 4 - Outras dúvidas`);
+                const response = `*OUTRAS DÚVIDAS*
+
+Digite sua dúvida que vamos te orientar.
+
+*# VOLTAR* ou *# FINALIZAR ATENDIMENTO*`;
+                // Atualiza contexto: menu outras dúvidas
+                this.updateConversationContext(message.from, {
+                    currentMenu: 'other',
+                    currentStep: null,
+                    lastAction: 'show_other_menu',
+                    lastResponse: response
+                });
+                await this.sendKeepingUnread(() => client.sendText(message.from, response), message.from, response);
+                return;
+            }
+            
+            // Verifica opções do submenu de suporte (1, 2, 3) - PRIORIDADE após menu principal
+            // IMPORTANTE: Estas verificações devem vir ANTES de outras verificações para garantir funcionamento correto
+            // Atualiza contexto para garantir que está atualizado
+            const supportContext = this.getConversationContext(message.from);
+            const isInSupportSubmenu = this.inSupportSubmenu.get(message.from) === true || 
+                                       supportContext.currentMenu === 'support_sub';
+            
+            if (isInSupportSubmenu) {
+                // Opção 1 - Internet Lenta
+                if (textLower.trim() === '1' || text.includes('internet lenta')) {
+                    console.log(`🔧 Cliente selecionou opção 1 - Internet lenta`);
+                    this.inSupportSubmenu.delete(message.from); // Remove do submenu
+                    const response = `*INTERNET LENTA*
+
+*SOLUÇÃO:*
+
+*• DESLIGUE O ROTEADOR.*
+*• AGUARDE 30 SEGUNDOS.*
+*• LIGUE NOVAMENTE.*
+*• AGUARDE 5 MINUTOS.*
+
+📞 *Não resolveu?* Digite *"3"*
+
+📱 *Digite 8 para voltar ao menu*`;
+                    // Atualiza contexto: saiu do submenu
+                    this.updateConversationContext(message.from, {
+                        currentMenu: 'main',
+                        currentStep: null,
+                        lastAction: 'internet_lenta_shown',
+                        lastResponse: response
+                    });
+                    await this.sendKeepingUnread(() => client.sendText(message.from, response), message.from, response);
+                    return;
+                }
+                
+                // Opção 2 - Sem Conexão
+                if (textLower.trim() === '2' || text.includes('internet caiu') || text.includes('caiu internet') || text.includes('sem conexão') || text.includes('sem conexao')) {
+                    console.log(`🔧 Cliente selecionou opção 2 - Sem conexão`);
+                    this.inSupportSubmenu.delete(message.from); // Remove do submenu
+                    const response = `*SEM CONEXÃO*
+
+*SOLUÇÃO:*
+
+*• VERIFIQUE CABOS CONECTADOS.*
+*• VERIFIQUE SE ROTEADOR ESTÁ LIGADO.*
+*• DESLIGUE E LIGUE NOVAMENTE.*
+
+📞 *Não resolveu?* Digite *"3"*
+
+📱 *Digite 8 para voltar ao menu*`;
+                    // Atualiza contexto: saiu do submenu
+                    this.updateConversationContext(message.from, {
+                        currentMenu: 'main',
+                        currentStep: null,
+                        lastAction: 'sem_conexao_shown',
+                        lastResponse: response
+                    });
+                    await this.sendKeepingUnread(() => client.sendText(message.from, response), message.from, response);
+                    return;
+                }
+                
+                // Opção 3 - Já Paguei
+                if (textLower.trim() === '3' || text.includes('já paguei') || text.includes('ja paguei')) {
+                    console.log(`🔧 Cliente selecionou opção 3 - Já pagou`);
+                    this.inSupportSubmenu.delete(message.from); // Remove do submenu
+                    const response = `*JÁ PAGUEI*
+
+⏱️ *Liberação em até 10 minutos.*
+
+📞 *Não liberou?* Digite *"3"*
+
+📱 *Digite 8 para voltar ao menu*`;
+                    // Atualiza contexto: saiu do submenu
+                    this.updateConversationContext(message.from, {
+                        currentMenu: 'main',
+                        currentStep: null,
+                        lastAction: 'ja_paguei_shown',
+                        lastResponse: response
+                    });
+                    await this.sendKeepingUnread(() => client.sendText(message.from, response), message.from, response);
+                    return;
+                }
+            }
+            
+            // Rate limiting: evita spam de respostas - APENAS para mensagens que não são comandos/opções de menu
+            // Comandos importantes e opções de menu já foram processados acima, então não bloqueia
+            const isMenuCommandCheck = textCheck === 'menu' || textCheck === '#menu' || textCheck.includes('menu') || textCheck === '8';
+            const isMenuOptionCheck = (textLower.trim() === '1' || textLower.trim() === '2' || textLower.trim() === '3' || textLower.trim() === '4' || 
+                                      textLower.trim() === '9' || textLower.trim() === '#' || textLower.trim() === '#voltar' || textLower.trim() === '#0' ||
+                                      textLower.trim() === '#finalizar' || textLower.trim() === '#9');
+            
+            // Só aplica rate limit se NÃO for comando de menu ou opção de menu
+            if (!isMenuCommandCheck && !isMenuOptionCheck) {
+                if (!this.checkRateLimit(message.from)) {
+                    console.log('⏸️ Rate limit atingido, ignorando...');
+                    return; // Rate limit atingido, ignora silenciosamente
+                }
+            }
+            
             // VERIFICAÇÃO: Se atendimento humano está ativo, verifica se cliente quer reativar
             // EXCEÇÃO: solicitações de pagamento SEMPRE reativam o bot
             const isPaymentRequest = intent === 'request_payment';
-            const textCheck = text.trim().toLowerCase();
-            const isPaymentCommand = textCheck.includes('pix') || textCheck.includes('menu') || textCheck.match(/^\d{11,14}$/);
+            const isPaymentCommand = textCheck.includes('pix') || textCheck === '9' || textCheck.match(/^\d{11,14}$/);
             
             if (this.humanAttending.get(message.from) === true) {
                 if (isPaymentCommand || isPaymentRequest) {
-                    // Cliente quer pagar - reativa bot
-                    console.log(`🤖 Cliente solicitou pagamento - reativando bot para atendimento automático.`);
+                    // Cliente quer pagar ou reativar bot
+                    if (textCheck === '9') {
+                        console.log(`🤖 Cliente digitou "9" - reativando bot.`);
+                    } else {
+                        console.log(`🤖 Cliente solicitou pagamento - reativando bot para atendimento automático.`);
+                    }
                     this.humanAttending.set(message.from, false);
+                    this.humanAttendingTime.delete(message.from);
                     // Continua o fluxo normalmente abaixo para processar solicitação
                 } else {
                     // Não é solicitação de pagamento - ignora
@@ -496,6 +1058,81 @@ class WhatsAppBot {
                 return; // Não responde nada
             }
             
+            // 1.1 Suporte técnico - Internet lenta
+            if (intent === 'support_slow') {
+                console.log(`🔧 Cliente reportou internet lenta: "${text.substring(0, 50)}..."`);
+                const response = `*INTERNET LENTA*
+
+*SOLUÇÃO:*
+
+*• DESLIGUE O ROTEADOR.*
+*• AGUARDE 30 SEGUNDOS.*
+*• LIGUE NOVAMENTE.*
+*• AGUARDE 5 MINUTOS.*
+
+📞 *Não resolveu?* Digite *"3"*
+
+📱 *Digite 8 para voltar ao menu*`;
+                await this.sendKeepingUnread(() => client.sendText(message.from, response), message.from, response);
+                return;
+            }
+            
+            // 1.2 Suporte técnico - Sem conexão
+            if (intent === 'support_dropped') {
+                console.log(`📶 Cliente reportou sem conexão: "${text.substring(0, 50)}..."`);
+                const response = `*SEM CONEXÃO*
+
+*SOLUÇÃO:*
+
+*• VERIFIQUE CABOS CONECTADOS.*
+*• VERIFIQUE SE ROTEADOR ESTÁ LIGADO.*
+*• DESLIGUE E LIGUE NOVAMENTE.*
+
+📞 *Não voltou?* Digite *"3"*
+
+📱 *Digite 8 para voltar ao menu*`;
+                await this.sendKeepingUnread(() => client.sendText(message.from, response), message.from, response);
+                return;
+            }
+            
+            // 1.3 Suporte técnico - Problemas gerais
+            if (intent === 'support_technical') {
+                console.log(`🔧 Cliente reportou problema técnico: "${text.substring(0, 50)}..."`);
+                const response = `*PROBLEMA TÉCNICO*
+
+*VERIFICAR:*
+
+✅ *Equipamentos ligados*
+✅ *Cabos conectados*
+✅ *Reiniciar roteador*
+
+📞 *Precisa de ajuda?* Digite *"3"*
+
+📱 *Digite 8 para voltar ao menu*`;
+                await this.sendKeepingUnread(() => client.sendText(message.from, response), message.from, response);
+                return;
+            }
+            
+            // 1.4 Suporte - Já pagou mas não liberou
+            if (intent === 'support_paid_not_working') {
+                console.log(`💳 Cliente já pagou mas internet não liberou: "${text.substring(0, 50)}..."`);
+                const response = `*PAGAMENTO PROCESSANDO*
+
+⏱️ *Aguarde até 10 minutos*
+
+*DEPOIS:*
+
+*1.* Aguarde 10 minutos
+*2.* Desligue/ligue roteador
+*3.* Internet será liberada
+
+📸 *Passou 10 min?* Envie comprovante.
+
+📱 *Digite 8 para voltar ao menu*`;
+                await this.sendKeepingUnread(() => client.sendText(message.from, response), message.from, response);
+                return;
+            }
+            
             // 2. Cliente informando que vai pagar presencialmente (ignorar E pausar bot)
             // VERIFICA ANTES de checar se bot está pausado - prioridade máxima
             if (intent === 'inform_presential') {
@@ -515,9 +1152,470 @@ class WhatsAppBot {
                 return; // Não responde - cliente não quer boleto/PIX
             }
             
+            // Verifica se está aguardando escolha entre PIX e boleto ANTES de qualquer outro processamento
+            // (Isso deve ser verificado ANTES do bloco unclear para funcionar independente da intenção)
+            if (conversationContext.currentMenu === 'payment' && conversationContext.currentStep === 'waiting_payment_option') {
+                const ctx = this.userStates.get(message.from);
+                
+                // Cliente escolheu PIX (opção 1 ou palavra "pix")
+                if (textLower.trim() === '1' || textLower.includes('pix') || textLower.trim() === 'pix') {
+                    if (!ctx) {
+                        const response = `*❌ ERRO*\n\nDados não encontrados. Por favor, envie seu CPF novamente.`;
+                        await this.sendKeepingUnread(() => client.sendText(message.from, response), message.from, response);
+                        this.updateConversationContext(message.from, {
+                            currentStep: 'waiting_cpf',
+                            lastAction: 'error_no_context'
+                        });
+                        return;
+                    }
+                    
+                    // Gera e envia PIX diretamente
+                    try {
+                        const pix = await zcBillService.generatePixQRCode(ctx.clientId, ctx.serviceId, ctx.billId);
+                        const parsed = this.parsePixPayload(pix);
+                        
+                        if (parsed.imageBase64) {
+                            await this.sendAudioResponse(message.from, 'QR code PIX. Escaneie para pagar via PIX.', true);
+                            await this.sendKeepingUnread(() => client.sendImageFromBase64(message.from, parsed.imageBase64, 'pix.png', '*🔵 QRCODE PIX*\n\n*ESCANEIE PARA PAGAR VIA PIX*'), message.from);
+                            
+                            try {
+                                const path = require('path');
+                                const fs = require('fs');
+                                const filesDir = path.join(__dirname, 'files');
+                                if (!fs.existsSync(filesDir)) fs.mkdirSync(filesDir, { recursive: true });
+                                
+                                let base64Data = parsed.imageBase64;
+                                if (typeof base64Data === 'string' && base64Data.includes(',')) {
+                                    base64Data = base64Data.split(',')[1];
+                                }
+                                
+                                const imageBuffer = Buffer.from(base64Data, 'base64');
+                                const fileId = `qrcode_${Date.now()}_${Math.random().toString(36).slice(2)}.png`;
+                                const destPath = path.join(filesDir, fileId);
+                                fs.writeFileSync(destPath, imageBuffer);
+                                
+                                messageStore.recordOutgoingMessage({
+                                    chatId: message.from,
+                                    text: '🔵 QRCode PIX',
+                                    timestamp: Date.now(),
+                                    fileId,
+                                    fileName: 'qrcode-pix.png',
+                                    fileType: 'image/png'
+                                });
+                            } catch (_) {
+                                try { messageStore.recordOutgoingMessage({ chatId: message.from, text: '[imagem] QRCode PIX', timestamp: Date.now() }); } catch (_) {}
+                            }
+                        }
+                        
+                        if (parsed.payload) {
+                            await this.sendAudioResponse(message.from, 'Copia o código abaixo e cole no seu banco para efetuar o pagamento', true);
+                            await new Promise(resolve => setTimeout(resolve, 500));
+                            await this.sendKeepingUnread(() => client.sendText(message.from, parsed.payload), message.from, parsed.payload);
+                            try { messageStore.recordOutgoingMessage({ chatId: message.from, text: parsed.payload }); } catch (_) {}
+                        }
+                        
+                        if (!parsed.imageBase64 && !parsed.payload) {
+                            await this.sendAudioResponse(message.from, 'Erro! PIX gerado, mas não recebi imagem nem código utilizável da API.', true);
+                            return;
+                        }
+                        
+                        // Envia mensagem pós-PIX
+                        await new Promise(resolve => setTimeout(resolve, 1000));
+                        const postPixMsg = `*PIX ENVIADO!*
+
+⏱️ *Liberação em até 5 minutos*
+
+*Se após 5 minutos não houve liberação automática:*
+
+*• Desligue e ligue o roteador*
+*• Aguarde a reconexão*
+
+📞 *Não voltou?* Digite *"3"*
+
+📱 *Digite 8 para voltar ao menu*`;
+                        
+                        this.updateConversationContext(message.from, {
+                            currentStep: 'waiting_payment_confirmation',
+                            lastAction: 'sent_pix',
+                            lastResponse: postPixMsg
+                        });
+                        
+                        await this.sendKeepingUnread(() => client.sendText(message.from, postPixMsg), message.from, postPixMsg);
+                        this.humanAttending.set(message.from, true);
+                        console.log(`⏸️ Bot pausado para chat ${message.from} após enviar PIX.`);
+                        return;
+                        
+                    } catch (e) {
+                        console.error('Erro ao gerar PIX:', e);
+                        await this.sendAudioResponse(message.from, 'Erro ao gerar PIX. Tente novamente.', true);
+                        return;
+                    }
+                }
+                
+                // Cliente escolheu BOLETO (opção 2)
+                if (textLower.trim() === '2' || textLower.includes('boleto') || textLower.trim() === 'boleto') {
+                    if (!ctx) {
+                        const response = `*❌ ERRO*\n\nDados não encontrados. Por favor, envie seu CPF novamente.`;
+                        await this.sendKeepingUnread(() => client.sendText(message.from, response), message.from, response);
+                        this.updateConversationContext(message.from, {
+                            currentStep: 'waiting_cpf',
+                            lastAction: 'error_no_context'
+                        });
+                        return;
+                    }
+                    
+                    // Gera e envia boleto
+                    try {
+                        const pdfPath = await zcBillService.generateBillPDF(ctx.clientId, ctx.serviceId, ctx.billId);
+                        const caption = `*📄 BOLETO DE ${ctx.clientName || 'cliente'}*\n\n⏱️ *Liberação em até 5 minutos após o pagamento*`;
+                        
+                        this.updateConversationContext(message.from, {
+                            currentStep: 'waiting_payment_confirmation',
+                            lastAction: 'sent_bill',
+                            lastResponse: caption
+                        });
+                        
+                        await this.sendAudioResponse(message.from, `Boleto de ${ctx.clientName || 'cliente'}. Liberação em até 5 minutos após o pagamento.`, true);
+                        await this.sendKeepingUnread(() => client.sendFile(message.from, pdfPath, 'boleto.pdf', caption), message.from);
+                        
+                        // Envia mensagem para voltar ao menu após enviar boleto
+                        const backToMenuMsg = `\n\n📱 *Digite 8 para voltar ao menu*`;
+                        await this.sendKeepingUnread(() => client.sendText(message.from, backToMenuMsg), message.from, backToMenuMsg);
+
+                        try {
+                            const path = require('path');
+                            const fs = require('fs');
+                            const filesDir = path.join(__dirname, 'files');
+                            if (!fs.existsSync(filesDir)) fs.mkdirSync(filesDir, { recursive: true });
+                            const fileId = `boleto_${Date.now()}_${Math.random().toString(36).slice(2)}.pdf`;
+                            const destPath = path.join(filesDir, fileId);
+                            fs.copyFileSync(pdfPath, destPath);
+                            messageStore.recordOutgoingMessage({
+                                chatId: message.from,
+                                text: caption,
+                                timestamp: Date.now(),
+                                fileId,
+                                fileName: 'boleto.pdf',
+                                fileType: 'application/pdf'
+                            });
+                        } catch (_) {
+                            try { messageStore.recordOutgoingMessage({ chatId: message.from, text: '[arquivo] boleto.pdf - ' + caption, timestamp: Date.now() }); } catch (_) {}
+                        }
+                        
+                        this.humanAttending.set(message.from, true);
+                        console.log(`⏸️ Bot pausado para chat ${message.from} após enviar boleto.`);
+                        return;
+                        
+                    } catch (e) {
+                        console.error('Erro ao gerar boleto:', e);
+                        await this.sendAudioResponse(message.from, 'Erro ao gerar boleto. Tente novamente.', true);
+                        return;
+                    }
+                }
+                
+                // Se não é nem PIX nem boleto, pede escolha novamente
+                const response = `*Por favor, escolha uma opção:*
+
+*1️⃣ PIX*
+
+*2️⃣ BOLETO*
+
+Digite o *número* da opção`;
+                await this.sendKeepingUnread(() => client.sendText(message.from, response), message.from, response);
+                return;
+            }
+            
             // 3. Se intenção não clara (unclear), verifica se é problema relacionado a pagamento
             // Se tiver palavras de pagamento E problema, pausa bot para atendimento humano
             if (intent === 'unclear') {
+                // Verifica se está no submenu de suporte e digitou 1, 2 ou 3 (fallback caso não tenha sido capturado antes)
+                if (this.inSupportSubmenu.get(message.from) === true || conversationContext.currentMenu === 'support_sub') {
+                    if (textLower.trim() === '1' || text.includes('internet lenta')) {
+                        console.log(`🔧 Cliente reportou internet lenta (fallback)`);
+                        this.inSupportSubmenu.delete(message.from);
+                        const response = `*INTERNET LENTA*
+
+*SOLUÇÃO:*
+
+*• DESLIGUE O ROTEADOR.*
+*• AGUARDE 30 SEGUNDOS.*
+*• LIGUE NOVAMENTE.*
+*• AGUARDE 5 MINUTOS.*
+
+📞 *Não resolveu?* Digite *"3"*
+
+📱 *Digite 8 para voltar ao menu*`;
+                        // Atualiza contexto: saiu do submenu
+                        this.updateConversationContext(message.from, {
+                            currentMenu: 'main',
+                            currentStep: null,
+                            lastAction: 'internet_lenta_shown',
+                            lastResponse: response
+                        });
+                        await this.sendKeepingUnread(() => client.sendText(message.from, response), message.from, response);
+                        return;
+                    }
+                    
+                    if (textLower.trim() === '2' || text.includes('internet caiu') || text.includes('caiu internet') || text.includes('sem conexão') || text.includes('sem conexao')) {
+                        console.log(`🔧 Cliente reportou sem conexão (fallback)`);
+                        this.inSupportSubmenu.delete(message.from);
+                        const response = `*SEM CONEXÃO*
+
+*SOLUÇÃO:*
+
+*• VERIFIQUE CABOS CONECTADOS.*
+*• VERIFIQUE SE ROTEADOR ESTÁ LIGADO.*
+*• DESLIGUE E LIGUE NOVAMENTE.*
+
+📞 *Não resolveu?* Digite *"3"*
+
+📱 *Digite 8 para voltar ao menu*`;
+                        // Atualiza contexto: saiu do submenu
+                        this.updateConversationContext(message.from, {
+                            currentMenu: 'main',
+                            currentStep: null,
+                            lastAction: 'sem_conexao_shown',
+                            lastResponse: response
+                        });
+                        await this.sendKeepingUnread(() => client.sendText(message.from, response), message.from, response);
+                        return;
+                    }
+                    
+                    if (textLower.trim() === '3' || text.includes('já paguei') || text.includes('ja paguei')) {
+                        console.log(`🔧 Cliente reportou já pagou (fallback)`);
+                        this.inSupportSubmenu.delete(message.from);
+                        const response = `*JÁ PAGUEI*
+
+⏱️ *Liberação em até 10 minutos.*
+
+📞 *Não liberou?* Digite *"3"*
+
+📱 *Digite 8 para voltar ao menu*`;
+                        // Atualiza contexto: saiu do submenu
+                        this.updateConversationContext(message.from, {
+                            currentMenu: 'main',
+                            currentStep: null,
+                            lastAction: 'ja_paguei_shown',
+                            lastResponse: response
+                        });
+                        await this.sendKeepingUnread(() => client.sendText(message.from, response), message.from, response);
+                        return;
+                    }
+                }
+                
+                // Verifica se é saudação inicial (oi, olá, bom dia, etc) - com mais variações
+                const greetings = [
+                    'oi', 'olá', 'ola', 'oi!', 'ola!', 'olá!',
+                    'bom dia', 'bomdia', 'bom-dia', 'bom dia!', 'bodia',
+                    'boa tarde', 'boatarde', 'boa-tarde', 'boa tarde!', 'boatarde',
+                    'boa noite', 'boanoite', 'boa-noite', 'boa noite!', 'boanoite',
+                    'e aí', 'eai', 'eaí', 'e aí?', 'e ai',
+                    'opá', 'opa', 'olá tudo bem', 'oi tudo bem', 'ola tudo bem',
+                    'bom dia tudo bem', 'boa tarde tudo bem', 'boa noite tudo bem',
+                    'hey', 'hi', 'hello', 'hola'
+                ];
+                
+                // Verifica se é saudação: match exato ou contém a saudação (permitindo outras palavras depois)
+                const isGreeting = greetings.some(g => {
+                    const greetingLower = g.toLowerCase();
+                    // Match exato
+                    if (textLower.trim() === greetingLower) return true;
+                    // Começa com a saudação
+                    if (textLower.trim().startsWith(greetingLower + ' ') || 
+                        textLower.trim().startsWith(greetingLower + ',') ||
+                        textLower.trim().startsWith(greetingLower + '!')) return true;
+                    // Contém a saudação como palavra completa (não parte de outra palavra)
+                    const regex = new RegExp(`\\b${greetingLower.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`, 'i');
+                    if (regex.test(textLower) && textLower.length < 100) return true; // Limita para evitar falsos positivos
+                    return false;
+                });
+                
+                if (isGreeting) {
+                    console.log(`👋 Cliente saudou (${textLower.substring(0, 30)}) - enviando menu de opções`);
+                    const menuMsg = `*COMO POSSO AJUDAR?*
+
+*1️⃣ PAGAMENTO / SEGUNDA VIA*
+
+*2️⃣ SUPORTE TÉCNICO*
+
+*3️⃣ FALAR COM ATENDENTE*
+
+*4️⃣ OUTRAS DÚVIDAS*
+
+Digite o *número* da opção`;
+                    // Atualiza contexto: menu principal
+                    this.updateConversationContext(message.from, {
+                        currentMenu: 'main',
+                        currentStep: null,
+                        lastAction: 'send_menu',
+                        lastResponse: menuMsg
+                    });
+                    await this.sendKeepingUnread(() => client.sendText(message.from, menuMsg), message.from, menuMsg);
+                    return;
+                }
+                
+                // Verifica se está no submenu de suporte e processa comandos especiais
+                if (this.inSupportSubmenu.get(message.from) === true) {
+                    // Tratamento para "#" ou "#voltar" - Voltar ao menu anterior
+                    if (textLower.trim() === '#' || textLower.trim() === '#voltar' || textLower.trim() === '#0') {
+                        console.log(`⬅️ Cliente voltou do submenu de suporte`);
+                        this.inSupportSubmenu.delete(message.from);
+                        this.userStates.delete(message.from); // Limpa dados antigos
+                        const menuMsg = `*COMO POSSO AJUDAR?*
+
+*1️⃣ PAGAMENTO / SEGUNDA VIA*
+
+*2️⃣ SUPORTE TÉCNICO*
+
+*3️⃣ FALAR COM ATENDENTE*
+
+*4️⃣ OUTRAS DÚVIDAS*
+
+Digite o *número* da opção`;
+                        // Atualiza contexto: voltou ao menu principal - LIMPA completamente
+                        this.updateConversationContext(message.from, {
+                            currentMenu: 'main',
+                            currentStep: null,
+                            lastAction: 'back_to_main_menu',
+                            lastResponse: menuMsg,
+                            lastMessage: null,
+                            lastIntent: null
+                        });
+                        await this.sendKeepingUnread(() => client.sendText(message.from, menuMsg), message.from, menuMsg);
+                        return;
+                    }
+                    
+                    // Tratamento para "9" ou "#finalizar" - Finalizar atendimento
+                    if (textLower.trim() === '9' || textLower.trim() === '#finalizar' || textLower.trim() === '#9') {
+                        console.log(`🏁 Cliente finalizou atendimento`);
+                        const response = `*Atendimento finalizado.*
+
+Obrigado por nos contactar! 🎉`;
+                        await this.sendKeepingUnread(() => client.sendText(message.from, response), message.from, response);
+                        this.inSupportSubmenu.delete(message.from);
+                        return;
+                    }
+                }
+                
+                // Verifica se está no menu de pagamento e processa comandos especiais
+                if (conversationContext.currentMenu === 'payment') {
+                    // Tratamento para "#" ou "#voltar" - Voltar ao menu anterior
+                    if (textLower.trim() === '#' || textLower.trim() === '#voltar' || textLower.trim() === '#0') {
+                        console.log(`⬅️ Cliente voltou do menu de pagamento`);
+                        this.userStates.delete(message.from); // Limpa dados antigos
+                        const menuMsg = `*COMO POSSO AJUDAR?*
+
+*1️⃣ PAGAMENTO / SEGUNDA VIA*
+
+*2️⃣ SUPORTE TÉCNICO*
+
+*3️⃣ FALAR COM ATENDENTE*
+
+*4️⃣ OUTRAS DÚVIDAS*
+
+Digite o *número* da opção`;
+                        // Atualiza contexto: voltou ao menu principal - LIMPA completamente
+                        this.updateConversationContext(message.from, {
+                            currentMenu: 'main',
+                            currentStep: null,
+                            lastAction: 'back_to_main_menu',
+                            lastResponse: menuMsg,
+                            lastMessage: null,
+                            lastIntent: null
+                        });
+                        await this.sendKeepingUnread(() => client.sendText(message.from, menuMsg), message.from, menuMsg);
+                        return;
+                    }
+                    
+                    // Tratamento para "#finalizar" - Finalizar atendimento
+                    if (textLower.trim() === '#finalizar' || textLower.trim() === '#9') {
+                        console.log(`🏁 Cliente finalizou atendimento`);
+                        const response = `*Atendimento finalizado.*
+
+Obrigado por nos contactar! 🎉`;
+                        await this.sendKeepingUnread(() => client.sendText(message.from, response), message.from, response);
+                        this.updateConversationContext(message.from, {
+                            currentMenu: 'main',
+                            currentStep: null
+                        });
+                        return;
+                    }
+                }
+                
+                // Opção 0 - Voltar (só funciona se não estiver em nenhum submenu)
+                if (textLower.trim() === '0' && 
+                    this.inSupportSubmenu.get(message.from) !== true && 
+                    conversationContext.currentMenu === 'main') {
+                    this.userStates.delete(message.from); // Limpa dados antigos
+                    const menuMsg = `*COMO POSSO AJUDAR?*
+
+*1️⃣ PAGAMENTO / SEGUNDA VIA*
+
+*2️⃣ SUPORTE TÉCNICO*
+
+*3️⃣ FALAR COM ATENDENTE*
+
+*4️⃣ OUTRAS DÚVIDAS*
+
+Digite o *número* da opção`;
+                    // Atualiza contexto: voltou ao menu principal - LIMPA completamente
+                    this.updateConversationContext(message.from, {
+                        currentMenu: 'main',
+                        currentStep: null,
+                        lastAction: 'back_to_main_menu',
+                        lastResponse: menuMsg,
+                        lastMessage: null,
+                        lastIntent: null
+                    });
+                    await this.sendKeepingUnread(() => client.sendText(message.from, menuMsg), message.from, menuMsg);
+                    return;
+                }
+                
+                // Verifica se está no menu outras dúvidas e processa comandos especiais
+                if (conversationContext.currentMenu === 'other') {
+                    // Tratamento para "#" ou "#voltar" - Voltar ao menu anterior
+                    if (textLower.trim() === '#' || textLower.trim() === '#voltar' || textLower.trim() === '#0') {
+                        console.log(`⬅️ Cliente voltou do menu outras dúvidas`);
+                        this.userStates.delete(message.from); // Limpa dados antigos
+                        const menuMsg = `*COMO POSSO AJUDAR?*
+
+*1️⃣ PAGAMENTO / SEGUNDA VIA*
+
+*2️⃣ SUPORTE TÉCNICO*
+
+*3️⃣ FALAR COM ATENDENTE*
+
+*4️⃣ OUTRAS DÚVIDAS*
+
+Digite o *número* da opção`;
+                        // Atualiza contexto: voltou ao menu principal - LIMPA completamente
+                        this.updateConversationContext(message.from, {
+                            currentMenu: 'main',
+                            currentStep: null,
+                            lastAction: 'back_to_main_menu',
+                            lastResponse: menuMsg,
+                            lastMessage: null,
+                            lastIntent: null
+                        });
+                        await this.sendKeepingUnread(() => client.sendText(message.from, menuMsg), message.from, menuMsg);
+                        return;
+                    }
+                    
+                    // Tratamento para "#finalizar" - Finalizar atendimento
+                    if (textLower.trim() === '#finalizar' || textLower.trim() === '#9') {
+                        console.log(`🏁 Cliente finalizou atendimento`);
+                        const response = `*Atendimento finalizado.*
+
+Obrigado por nos contactar! 🎉`;
+                        await this.sendKeepingUnread(() => client.sendText(message.from, response), message.from, response);
+                        this.updateConversationContext(message.from, {
+                            currentMenu: 'main',
+                            currentStep: null
+                        });
+                        return;
+                    }
+                }
+                
                 const hasPaymentWord = ['paguei', 'pago', 'pagamento', 'paguei', 'fiz o pagamento'].some(kw => textLower.includes(kw));
                 const hasProblem = [
                     'ainda n', 'ainda não', 'ainda nao', 'ainda não liberou', 'ainda nao liberou',
@@ -539,25 +1637,25 @@ class WhatsAppBot {
             
             // 4. Solicitação clara de boleto/PIX - processa comandos
             // Continua o fluxo abaixo para processar solicitação
-            if (textLower === 'menu' || textLower.includes('menu')) {
-                const out = this.menuTexto();
-                // Responde sempre com áudio quando é sobre pagamento/internet
-                await this.sendAudioResponse(message.from, 
-                    'Menu de opções. Envie seu CPF apenas números para receber o boleto em PDF. Escreva pix para instruções de PIX.',
-                    true
-                );
-                return;
-            }
+            // (Menu já foi processado acima, então não precisa verificar novamente aqui)
             
+            // Processamento geral de PIX (fora do fluxo novo)
             if (textLower.includes('pix')) {
                 const ctx = this.userStates.get(message.from);
                 if (!ctx) {
-                    const out = '🤖 *PARA GERAR O PIX*\n\nEnvie seu *CPF* (somente números).';
-                    // Responde sempre com áudio quando é sobre pagamento/internet
-                    await this.sendAudioResponse(message.from, 
-                        'Para gerar o PIX, preciso do seu CPF apenas números.',
-                        true
-                    );
+                    const response = `*PAGAMENTO COM PIX*
+
+Para gerar o QR Code PIX, envie seu *CPF* (somente números)
+
+*# VOLTAR* ou *# FINALIZAR ATENDIMENTO*`;
+                    // Atualiza contexto: esperando CPF para PIX
+                    this.updateConversationContext(message.from, {
+                        currentMenu: 'payment',
+                        currentStep: 'waiting_cpf',
+                        lastAction: 'request_pix',
+                        lastResponse: response
+                    });
+                    await this.sendKeepingUnread(() => client.sendText(message.from, response), message.from, response);
                     return;
                 }
                 try {
@@ -619,7 +1717,7 @@ class WhatsAppBot {
                         await new Promise(resolve => setTimeout(resolve, 500));
                         
                         // Envia o código em outra mensagem (só texto, não precisa áudio para código)
-                        await this.sendKeepingUnread(() => client.sendText(message.from, parsed.payload), message.from);
+                        await this.sendKeepingUnread(() => client.sendText(message.from, response), message.from, response);
                         try { messageStore.recordOutgoingMessage({ chatId: message.from, text: parsed.payload }); } catch (_) {}
                     }
                     if (!parsed.imageBase64 && !parsed.payload) {
@@ -637,10 +1735,27 @@ class WhatsAppBot {
                     await new Promise(resolve => setTimeout(resolve, 1000));
                     
                     // Envia mensagem de instruções pós-pagamento
-                    await this.sendAudioResponse(message.from, 
-                        'Após realizar o pagamento, em até 5 minutos sua internet estará liberada automaticamente. Se sua internet não voltar, desligue e ligue novamente os equipamentos.',
-                        true
-                    );
+                    const postPixMsg = `*PIX ENVIADO!*
+
+⏱️ *Liberação em até 5 minutos*
+
+*Se após 5 minutos não houve liberação automática:*
+
+*• Desligue e ligue o roteador*
+*• Aguarde a reconexão*
+
+📞 *Não voltou?* Digite *"3"*
+
+📱 *Digite 8 para voltar ao menu*`;
+                    
+                    // Atualiza contexto: PIX enviado, aguardando confirmação
+                    this.updateConversationContext(message.from, {
+                        currentStep: 'waiting_payment_confirmation',
+                        lastAction: 'sent_pix',
+                        lastResponse: postPixMsg
+                    });
+                    
+                    await this.sendKeepingUnread(() => client.sendText(message.from, postPixMsg), message.from, postPixMsg);
                     
                     // PAUSA O BOT para este chat após enviar PIX
                     this.humanAttending.set(message.from, true);
@@ -670,16 +1785,27 @@ class WhatsAppBot {
             // Resposta padrão quando há solicitação de pagamento mas não é comando específico
             // Só responde se realmente houver intenção de solicitar pagamento
             if (intent === 'request_payment') {
-                const reply = '🤖 *OLÁ!*\n\nPara consultar seu boleto, envie seu *CPF* (apenas números).\n\nPara mais opções, envie "*menu*".';
+                const reply = `*PAGAMENTO / SEGUNDA VIA*
+
+Para gerar seu boleto ou PIX, envie seu *CPF* (somente números)
+
+*# VOLTAR* ou *# FINALIZAR ATENDIMENTO*`;
+                
+                // Atualiza contexto: menu de pagamento, aguardando CPF
+                this.updateConversationContext(message.from, {
+                    currentMenu: 'payment',
+                    currentStep: 'waiting_cpf',
+                    lastAction: 'show_payment_menu',
+                    lastResponse: reply
+                });
                 
                 // SEMPRE responde com áudio quando é sobre pagamento/internet (mesmo se cliente enviou texto)
-                await this.sendAudioResponse(message.from, 
-                    'Olá! Para consultar seu boleto, envie seu CPF apenas números. Para mais opções, envie menu.',
-                    true
-                );
+                await this.sendKeepingUnread(() => client.sendText(message.from, reply), message.from, reply);
             }
             } catch (err) {
                 console.error('❌ Erro ao processar mensagem:', err);
+                console.error('📋 Stack trace:', err.stack);
+                // Não bloqueia outras mensagens mesmo se uma der erro
             }
         });
 
@@ -689,10 +1815,15 @@ class WhatsAppBot {
         client.onAnyMessage((m) => {
             try {
                 // Ignora grupos
-                if (m.isGroupMsg) return;
-                // Ignora mensagens de status/stories
-                if (m.isStatus === true || m.from === 'status@broadcast' || m.from?.includes('status') || 
-                    m.isStory || m.type === 'status') return;
+                if (m.isGroupMsg === true || m.from?.includes('@g.us')) return;
+                // Ignora mensagens de status/stories (várias verificações)
+                if (m.isStatus === true || 
+                    m.from === 'status@broadcast' || 
+                    m.from?.includes('status') || 
+                    m.isStory === true || 
+                    m.type === 'status' ||
+                    m.type === 'ptt' && m.from?.includes('broadcast') ||
+                    m.chatId?.includes('status@')) return;
                 // Se mensagem foi enviada pelo próprio WhatsApp (atendente no celular/WhatsApp Web)
                 if (m.fromMe === true && typeof m.body === 'string' && m.body.trim().length > 0) {
                     // IGNORA mensagens com base64 longo (provavelmente confirmação de envio de arquivo)
@@ -702,7 +1833,8 @@ class WhatsAppBot {
                     
                     // Evita duplicidade com mensagens já gravadas pelo painel/bot
                     const targetChatId = m.chatId || m.to || m.from;
-                    const exists = messageStore.hasSimilarRecentOutgoing(targetChatId, m.body.trim(), 10000);
+                    // Aumenta janela de verificação para 30 segundos para evitar duplicatas
+                    const exists = messageStore.hasSimilarRecentOutgoing(targetChatId, m.body.trim(), 30000);
                     if (!exists) {
                         try { messageStore.recordOutgoingMessage({ chatId: targetChatId, text: m.body.trim(), timestamp: Date.now() }); } catch (_) {}
                     }
@@ -925,11 +2057,53 @@ class WhatsAppBot {
     }
 
     // ===== Envio mantendo conversa como NÃO lida =====
-    async sendKeepingUnread(sendFn, chatId) {
+    async sendKeepingUnread(sendFn, chatId, messageText = null) {
         try {
+            // Anti-duplicação: se uma mensagem idêntica acabou de ser enviada/salva, não envia de novo
+            try {
+                if (messageText && chatId) {
+                    const alreadyExists = messageStore.hasSimilarRecentOutgoing(chatId, String(messageText), 5000);
+                    if (alreadyExists) {
+                        return { skipped: true };
+                    }
+                }
+            } catch (_) {}
             // Garante bloqueio de leitura antes de enviar
             try { await this.injectNoRead(); } catch (_) {}
             const result = await sendFn();
+            
+            // Registra mensagem enviada no painel (se texto foi fornecido)
+            if (messageText && chatId) {
+                try {
+                    // Tenta obter o nome do contato para atualizar o chat
+                    let contactName = '';
+                    try {
+                        if (this.client && typeof this.client.getContact === 'function') {
+                            const contact = await this.client.getContact(chatId);
+                            contactName = contact?.pushname || contact?.name || '';
+                        }
+                    } catch (_) {
+                        // Se falhar ao obter nome, usa string vazia
+                    }
+                    
+                    messageStore.recordOutgoingMessage({
+                        chatId: chatId,
+                        text: messageText,
+                        timestamp: Date.now()
+                    });
+                    
+                    // Atualiza o nome do chat se obtivemos o nome do contato
+                    if (contactName) {
+                        try {
+                            messageStore.upsertChat(chatId, contactName);
+                        } catch (_) {}
+                    }
+                } catch (err) {
+                    // Não bloqueia o envio se falhar ao registrar
+                    console.error('Erro ao registrar mensagem enviada:', err);
+                }
+            }
+            
             // pequena espera e marca como não lida
             await this.sleep(150);
             try {
@@ -1173,14 +2347,53 @@ class WhatsAppBot {
                 chatId = chatId.includes('-') ? chatId : `${chatId}@c.us`;
             }
 
-            // Envia mensagem usando sendKeepingUnread para não marcar como lida
-            const result = await this.sendKeepingUnread(
-                () => this.client.sendText(chatId, text),
-                chatId
-            );
+            // SALVA MENSAGEM NO BANCO ANTES de tentar enviar
+            // Isso garante que mesmo se o envio falhar, a mensagem aparecerá no painel
+            try {
+                let contactName = '';
+                try {
+                    if (this.client && typeof this.client.getContact === 'function') {
+                        const contact = await this.client.getContact(chatId);
+                        contactName = contact?.pushname || contact?.name || '';
+                    }
+                } catch (_) {}
 
-            console.log(`📤 Mensagem enviada para ${chatId}: ${text.substring(0, 50)}...`);
-            return result;
+                messageStore.recordOutgoingMessage({
+                    chatId: chatId,
+                    text: text,
+                    timestamp: Date.now()
+                });
+                
+                console.log(`💾 Mensagem salva no banco para ${chatId}: "${text.substring(0, 30)}..."`);
+
+                if (contactName) {
+                    try {
+                        messageStore.upsertChat(chatId, contactName);
+                    } catch (_) {}
+                }
+            } catch (err) {
+                // Não bloqueia se falhar ao salvar
+                console.error('Erro ao salvar mensagem no banco:', err);
+            }
+
+            // Agora tenta enviar a mensagem
+            try {
+                // Envia mensagem usando sendKeepingUnread para não marcar como lida
+                // Não passa o texto novamente para evitar duplicação no banco
+                const result = await this.sendKeepingUnread(
+                    () => this.client.sendText(chatId, text),
+                    chatId,
+                    null // Não registra novamente (já foi salvo acima)
+                );
+
+                console.log(`📤 Mensagem enviada para ${chatId}: ${text.substring(0, 50)}...`);
+                return result;
+            } catch (sendError) {
+                // Mesmo se falhar o envio, a mensagem já está salva no banco
+                console.error('⚠️ Erro ao enviar via WhatsApp (mas mensagem já salva no banco):', sendError.message || sendError);
+                // Retorna sucesso parcial - mensagem salva mas não enviada
+                return { id: null, saved: true };
+            }
         } catch (error) {
             console.error('❌ Erro ao enviar mensagem:', error);
             throw error;
@@ -1231,6 +2444,25 @@ class WhatsAppBot {
         }
     }
 
+    /**
+     * Reativa o bot para um chat específico (finaliza atendimento humano)
+     * @param {string} chatId - ID do chat
+     */
+    pauseBotForChat(chatId) {
+        this.humanAttending.set(chatId, true);
+        this.humanAttendingTime.set(chatId, Date.now());
+        console.log(`⏸️ Bot pausado para chat ${chatId} pelo atendente.`);
+    }
+
+    isBotPausedForChat(chatId) {
+        return this.humanAttending.get(chatId) === true;
+    }
+
+    reactivateBotForChat(chatId) {
+        this.humanAttending.set(chatId, false);
+        this.humanAttendingTime.delete(chatId);
+        console.log(`🤖 Bot reativado para chat ${chatId} pelo atendente.`);
+    }
 
     /**
      * Encerra o bot e fecha a sessão com segurança.
@@ -1368,6 +2600,152 @@ class WhatsAppBot {
         } catch (e) {
             console.error('Erro ao limpar cache:', e);
         }
+    }
+
+    cleanupAbandonedAttendances() {
+        try {
+            const now = Date.now();
+            const maxAge = 5 * 60 * 1000; // 5 minutos
+            
+            // Verifica atendimentos ativos abandonados há mais de 5 minutos
+            for (const [chatId, timestamp] of this.humanAttendingTime.entries()) {
+                if (now - timestamp > maxAge) {
+                    this.humanAttending.set(chatId, false);
+                    this.humanAttendingTime.delete(chatId);
+                    console.log(`🤖 Atendimento humano abandonado há 5+ minutos - bot reativado automaticamente para ${chatId}`);
+                }
+            }
+        } catch (e) {
+            console.error('Erro ao limpar atendimentos abandonados:', e);
+        }
+    }
+
+    /**
+     * Limpa contextos de conversa antigos (inativos há 30+ minutos)
+     */
+    cleanupOldContexts() {
+        try {
+            const now = Date.now();
+            const maxAge = 30 * 60 * 1000; // 30 minutos
+            
+            for (const [chatId, context] of this.conversationContext.entries()) {
+                if (context.updatedAt && (now - context.updatedAt > maxAge)) {
+                    this.conversationContext.delete(chatId);
+                }
+            }
+        } catch (e) {
+            console.error('Erro ao limpar contextos antigos:', e);
+        }
+    }
+
+    /**
+     * Obtém o contexto atual da conversa para um chat
+     */
+    getConversationContext(chatId) {
+        if (!this.conversationContext.has(chatId)) {
+            this.conversationContext.set(chatId, {
+                currentMenu: 'main',
+                currentStep: null,
+                lastIntent: null,
+                lastAction: null,
+                conversationHistory: [],
+                lastMessage: null,
+                lastResponse: null,
+                updatedAt: Date.now()
+            });
+        }
+        return this.conversationContext.get(chatId);
+    }
+
+    /**
+     * Atualiza o contexto da conversa
+     */
+    updateConversationContext(chatId, updates) {
+        const context = this.getConversationContext(chatId);
+        const now = Date.now();
+        
+        // Atualiza campos
+        Object.assign(context, updates, { updatedAt: now });
+        
+        // Mantém histórico das últimas 10 ações (se especificado)
+        if (updates.lastAction) {
+            context.conversationHistory.push({
+                action: updates.lastAction,
+                intent: updates.lastIntent || context.lastIntent,
+                timestamp: now
+            });
+            // Mantém apenas últimas 10 ações
+            if (context.conversationHistory.length > 10) {
+                context.conversationHistory.shift();
+            }
+        }
+        
+        return context;
+    }
+
+    /**
+     * Verifica se uma intenção faz sentido no contexto atual da conversa
+     * Retorna true se a intenção é válida no contexto, false caso contrário
+     */
+    isContextValid(intent, chatId, messageText) {
+        const context = this.getConversationContext(chatId);
+        const text = (messageText || '').toLowerCase().trim();
+        
+        // Se está em um submenu específico, verifica se a intenção faz sentido
+        if (context.currentMenu === 'support_sub') {
+            // No submenu de suporte, só aceita opções válidas ou comandos especiais
+            const validOptions = ['1', '2', '3', '9', '#', '#voltar', '#finalizar', '#0', '#9'];
+            const isMenuOption = validOptions.includes(text) || text.includes('internet') || text.includes('paguei');
+            
+            // Se não é uma opção válida do menu, mas tem intenção clara de algo diferente
+            // Pode ser fora de contexto - verifica com histórico
+            if (!isMenuOption && intent !== 'unclear') {
+                // Verifica se a intenção mudou drasticamente do último contexto
+                if (context.lastIntent && context.lastIntent !== intent && 
+                    !['support_slow', 'support_dropped', 'confirm_payment'].includes(intent)) {
+                    // Contexto pode estar desatualizado - permite mas atualiza
+                    return true; // Permite mas atualizará contexto
+                }
+            }
+            return true; // Permite opções do menu
+        }
+        
+        // Se está esperando CPF
+        if (context.currentStep === 'waiting_cpf') {
+            // Aceita CPF, menu, ou comandos de cancelamento
+            const isCpf = /^\d{11,14}$/.test(text);
+            const isCancel = text === 'menu' || text === 'cancelar' || text === '0' || text === '#';
+            if (isCpf || isCancel || intent === 'request_payment') {
+                return true;
+            }
+            // Se intenção mudou drasticamente, pode ser fora de contexto
+            if (intent !== 'unclear' && intent !== context.lastIntent && intent !== 'request_payment') {
+                return false; // Fora de contexto
+            }
+        }
+        
+        // Se está esperando PIX
+        if (context.currentStep === 'waiting_pix') {
+            const isPix = text === 'pix' || text.includes('pix');
+            const isCancel = text === 'menu' || text === 'cancelar' || text === '0' || text === '#';
+            if (isPix || isCancel || intent === 'request_payment') {
+                return true;
+            }
+        }
+        
+        // Verifica mudanças bruscas de contexto
+        if (context.lastIntent && context.lastIntent !== 'unclear' && intent !== context.lastIntent) {
+            // Se a última ação foi enviar menu e agora veio algo totalmente diferente sem comando de menu
+            if (context.lastAction === 'send_menu' && intent !== 'unclear' && !['1', '2', '3', '4', '9'].includes(text)) {
+                // Pode ser fora de contexto - mas permite se intenção é clara
+                if (intent === 'request_payment' || intent === 'confirm_payment') {
+                    return true; // Permite solicitações claras
+                }
+            }
+        }
+        
+        // Por padrão, permite se não há conflito claro
+        return true;
     }
 }
 

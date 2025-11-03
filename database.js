@@ -105,9 +105,16 @@ class DatabaseStore {
     recordOutgoingMessage({ chatId, text, timestamp, audioId, fileId, fileName, fileType }) {
         const messageId = `${chatId}:out:${timestamp}`;
         
+        // Dedupe de salvamento: evita salvar saídas idênticas muito recentes
+        try {
+            if (this.hasSimilarRecentOutgoing(chatId, text, 5000)) {
+                return { id: messageId, direction: 'out', sender: 'bot', text, timestamp };
+            }
+        } catch (_) {}
+        
         // Garante que o chat exista
         try { this.upsertChat(chatId); } catch (_) {}
-
+        
         // Insere mensagem
         const msgStmt = db.prepare(`
             INSERT INTO messages (id, chat_id, direction, content, timestamp, audio_id, file_id, file_name, file_type)
@@ -184,7 +191,6 @@ class DatabaseStore {
                 FROM messages
                 WHERE chat_id = ?
                 ORDER BY timestamp ASC
-                LIMIT 500
             `);
             
             const messages = messagesStmt.all(chatId).map(row => ({
@@ -213,15 +219,35 @@ class DatabaseStore {
     }
 
     /**
+     * Remove todos os chats e mensagens (limpeza total)
+     */
+    clearAll() {
+        try {
+            const tx = db.transaction(() => {
+                db.exec('DELETE FROM messages;');
+                db.exec('DELETE FROM chats;');
+            });
+            tx();
+            try { db.exec('VACUUM;'); } catch (_) {}
+            return true;
+        } catch (e) {
+            console.error('Erro ao limpar banco:', e);
+            return false;
+        }
+    }
+
+    /**
      * Verifica se já existe uma mensagem de saída recente com mesmo texto
      * para evitar duplicidade quando capturamos mensagens enviadas pelo WhatsApp.
      */
-    hasSimilarRecentOutgoing(chatId, text, windowMs = 10000) {
+    hasSimilarRecentOutgoing(chatId, text, windowMs = 30000) {
         try {
             const threshold = Date.now() - windowMs;
             const trimmedText = (text || '').trim();
             
-            // Verifica exatamente o texto
+            if (!trimmedText) return false;
+            
+            // Verifica exatamente o texto (comparação exata)
             const stmt = db.prepare(`
                 SELECT 1 FROM messages
                 WHERE chat_id = ? AND direction = 'out' AND content = ? AND timestamp >= ?
@@ -238,9 +264,85 @@ class DatabaseStore {
                 LIMIT 1
             `);
             const rowSimilar = stmtSimilar.get(chatId, threshold, trimmedText);
-            return !!rowSimilar;
-        } catch (e) {
+            if (rowSimilar) return true;
+            
+            // Verifica mensagens muito recentes (últimos 5 segundos) com texto similar (primeiros 50 chars)
+            const recentThreshold = Date.now() - 5000;
+            if (trimmedText.length >= 10) {
+                const prefix = trimmedText.substring(0, Math.min(50, trimmedText.length));
+                const stmtRecent = db.prepare(`
+                    SELECT 1 FROM messages
+                    WHERE chat_id = ? AND direction = 'out' AND timestamp >= ?
+                    AND LENGTH(content) >= 10
+                    AND LOWER(SUBSTR(TRIM(content), 1, ?)) = LOWER(?)
+                    LIMIT 1
+                `);
+                const rowRecent = stmtRecent.get(chatId, recentThreshold, prefix.length, prefix);
+                if (rowRecent) return true;
+            }
+            
             return false;
+        } catch (e) {
+            // Em caso de erro, assume que não existe para evitar duplicatas
+            return true;
+        }
+    }
+
+    /**
+     * Obtém estatísticas gerais do dashboard
+     */
+    getStats() {
+        try {
+            // Total de chats
+            const totalChatsStmt = db.prepare('SELECT COUNT(*) as count FROM chats');
+            const totalChats = totalChatsStmt.get().count;
+            
+            // Total de mensagens
+            const totalMessagesStmt = db.prepare('SELECT COUNT(*) as count FROM messages');
+            const totalMessages = totalMessagesStmt.get().count;
+            
+            // Total de não lidas
+            const unreadStmt = db.prepare('SELECT SUM(unread_count) as total FROM chats');
+            const unreadResult = unreadStmt.get();
+            const totalUnread = unreadResult.total || 0;
+            
+            // Mensagens de entrada (clientes)
+            const incomingStmt = db.prepare(`SELECT COUNT(*) as count FROM messages WHERE direction = 'in'`);
+            const totalIncoming = incomingStmt.get().count;
+            
+            // Mensagens de saída (bot/atendente)
+            const outgoingStmt = db.prepare(`SELECT COUNT(*) as count FROM messages WHERE direction = 'out'`);
+            const totalOutgoing = outgoingStmt.get().count;
+            
+            // Chats ativos hoje
+            const todayStart = new Date();
+            todayStart.setHours(0, 0, 0, 0);
+            const todayTimestamp = todayStart.getTime();
+            const activeTodayStmt = db.prepare(`
+                SELECT COUNT(DISTINCT chat_id) as count 
+                FROM messages 
+                WHERE timestamp >= ?
+            `);
+            const activeToday = activeTodayStmt.get(todayTimestamp).count;
+            
+            return {
+                totalChats,
+                totalMessages,
+                totalUnread,
+                totalIncoming,
+                totalOutgoing,
+                activeToday
+            };
+        } catch (e) {
+            console.error('Erro ao obter estatísticas:', e);
+            return {
+                totalChats: 0,
+                totalMessages: 0,
+                totalUnread: 0,
+                totalIncoming: 0,
+                totalOutgoing: 0,
+                activeToday: 0
+            };
         }
     }
 }

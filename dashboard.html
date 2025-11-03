@@ -258,8 +258,12 @@
     .messages-container { 
       flex: 1; 
       overflow-y: auto; 
+      overflow-x: hidden;
       padding: 20px;
       background: linear-gradient(180deg, rgba(30, 41, 59, 0.2) 0%, rgba(15, 23, 42, 0.1) 100%);
+      display: flex;
+      flex-direction: column;
+      position: relative;
     }
     
     .message { 
@@ -679,8 +683,14 @@
         display: block;
         width: 100%;
         max-width: 100%;
-        position: static;
+        position: fixed;
+        left: 0;
+        top: 60px;
+        bottom: 0;
         transform: none;
+        z-index: 1001;
+        background: rgba(15, 23, 42, 1);
+        backdrop-filter: none;
       }
       
       .chat-area {
@@ -692,6 +702,7 @@
         top: 60px;
         bottom: 0;
         background: rgba(30, 41, 59, 0.3);
+        z-index: 1000;
       }
       
       .chat-area.show {
@@ -706,6 +717,22 @@
       .search-box {
         padding: 7px 10px;
         font-size: 13px;
+      }
+      
+      #statsPanel {
+        padding: 10px !important;
+      }
+      
+      #statsPanel > div > div {
+        padding: 8px !important;
+      }
+      
+      #statsPanel > div > div > div:first-child {
+        font-size: 18px !important;
+      }
+      
+      #statsPanel > div > div > div:last-child {
+        font-size: 9px !important;
       }
       
       .chat-item {
@@ -738,12 +765,11 @@
         min-width: 16px;
       }
       
-      .chat-area {
-        width: 100%;
-      }
-      
       .chat-header {
         padding: 10px 12px;
+        position: relative;
+        z-index: 1001;
+        background: rgba(15, 23, 42, 0.95);
       }
       
       .back-button {
@@ -757,6 +783,8 @@
       
       .chat-actions {
         gap: 6px;
+        position: relative;
+        z-index: 1002;
       }
       
       .btn {
@@ -862,6 +890,29 @@
         <div class="sidebar-header">
           <input type="text" class="search-box" placeholder="🔍 Buscar conversas..." id="searchInput">
         </div>
+        
+        <!-- Painel de Estatísticas -->
+        <div id="statsPanel" style="padding: 16px; border-bottom: 1px solid rgba(30, 41, 59, 0.5); background: rgba(15, 23, 42, 0.5);">
+          <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 8px;">
+            <div style="background: rgba(59, 130, 246, 0.1); border: 1px solid rgba(59, 130, 246, 0.3); border-radius: 8px; padding: 10px; text-align: center;">
+              <div style="font-size: 24px; font-weight: 700; color: #3b82f6;" id="statTotalChats">0</div>
+              <div style="font-size: 10px; color: #94a3b8; margin-top: 4px;">TOTAL CHATS</div>
+            </div>
+            <div style="background: rgba(239, 68, 68, 0.1); border: 1px solid rgba(239, 68, 68, 0.3); border-radius: 8px; padding: 10px; text-align: center;">
+              <div style="font-size: 24px; font-weight: 700; color: #ef4444;" id="statTotalUnread">0</div>
+              <div style="font-size: 10px; color: #94a3b8; margin-top: 4px;">NÃO LIDAS</div>
+            </div>
+            <div style="background: rgba(34, 197, 94, 0.1); border: 1px solid rgba(34, 197, 94, 0.3); border-radius: 8px; padding: 10px; text-align: center;">
+              <div style="font-size: 24px; font-weight: 700; color: #22c55e;" id="statActiveToday">0</div>
+              <div style="font-size: 10px; color: #94a3b8; margin-top: 4px;">ATIVOS HOJE</div>
+            </div>
+            <div style="background: rgba(168, 85, 247, 0.1); border: 1px solid rgba(168, 85, 247, 0.3); border-radius: 8px; padding: 10px; text-align: center;">
+              <div style="font-size: 24px; font-weight: 700; color: #a855f7;" id="statTotalMessages">0</div>
+              <div style="font-size: 10px; color: #94a3b8; margin-top: 4px;">MENSAGENS</div>
+            </div>
+          </div>
+        </div>
+        
         <div class="chats-list" id="chatList">
           <div class="empty-state">
             <div class="loading"></div>
@@ -879,6 +930,9 @@
           <h2 class="chat-title" id="chatTitle">Selecione uma conversa</h2>
           </div>
           <div class="chat-actions">
+            <button class="btn btn-secondary" id="toggleBot" disabled>
+              🤖 Bot: Ativo
+            </button>
             <button class="btn btn-primary" id="markRead" disabled>
               ✓ Marcar como lido
             </button>
@@ -926,14 +980,25 @@
     let filteredChats = [];
 
     async function fetchJSON(url, options) {
-      const res = await fetch(url, options);
+      const opts = options ? { ...options } : {};
+      // Evita cache em requisições GET
+      if (!opts.method || String(opts.method).toUpperCase() === 'GET') {
+        const sep = url.includes('?') ? '&' : '?';
+        url = `${url}${sep}t=${Date.now()}`;
+        opts.cache = 'no-store';
+      }
+      const res = await fetch(url, opts);
       if (!res.ok) throw new Error('HTTP ' + res.status);
       return await res.json();
     }
 
     function formatTime(ts) {
       try { 
-        const date = new Date(ts);
+        // Garante que o timestamp seja tratado como número (milliseconds)
+        const timestamp = typeof ts === 'number' ? ts : parseInt(ts);
+        if (isNaN(timestamp)) return '--';
+        
+        const date = new Date(timestamp);
         const now = new Date();
         const diff = now - date;
         
@@ -959,20 +1024,22 @@
 
     function updateStatus(online) {
       const status = document.getElementById('status');
+      if (!status) return; // elemento não existe na página
       const dot = status.querySelector('.status-dot');
       const text = status.querySelector('span');
       
       if (online) {
-        dot.style.background = '#22c55e';
-        text.textContent = 'Online';
+        if (dot) dot.style.background = '#22c55e';
+        if (text) text.textContent = 'Online';
       } else {
-        dot.style.background = '#ef4444';
-        text.textContent = 'Offline';
+        if (dot) dot.style.background = '#ef4444';
+        if (text) text.textContent = 'Offline';
       }
     }
 
-    function renderChats(chats, skipRenderIfNoChange = false) {
+    function renderChats(chats) {
       const list = document.getElementById('chatList');
+      if (!list) return;
       
       if (chats.length === 0) {
         list.innerHTML = `
@@ -985,7 +1052,6 @@
         return;
       }
 
-      // Se tem chats, sempre renderiza
       list.innerHTML = '';
       chats.forEach(chat => {
         const div = document.createElement('div');
@@ -1016,21 +1082,35 @@
       });
     }
 
+    let isLoadingChats = false;
     async function loadChats(silent = false) {
+      // Evita múltiplas chamadas simultâneas
+      if (isLoadingChats) return;
+      isLoadingChats = true;
+      
       try {
         const data = await fetchJSON('/api/chats');
-        allChats = data.chats || [];
+        const newChats = data.chats || [];
+        
+        // Só atualiza se houver mudanças ou se não for silencioso
+        const hasChanges = JSON.stringify(newChats.map(c => ({id: c.id, unread: c.unreadCount}))) !== 
+                           JSON.stringify(allChats.map(c => ({id: c.id, unread: c.unreadCount})));
+        
+        allChats = newChats;
         filteredChats = allChats;
         
-        // Sempre renderiza quando não é silencioso ou quando não tem conversas ainda
-        renderChats(filteredChats, silent);
+        if (!silent || hasChanges) {
+          renderChats(filteredChats);
+        }
+        
         updateStatus(true);
       } catch (e) {
-        console.error('Erro ao carregar chats:', e);
         allChats = [];
         filteredChats = [];
         renderChats([]);
         updateStatus(false);
+      } finally {
+        isLoadingChats = false;
       }
     }
 
@@ -1057,19 +1137,49 @@
       const header = document.getElementById('chatHeader');
       const title = document.getElementById('chatTitle');
       const markReadBtn = document.getElementById('markRead');
+      const toggleBotBtn = document.getElementById('toggleBot');
       const inputContainer = document.getElementById('messageInputContainer');
       
       header.style.display = 'flex';
       title.textContent = chat?.name || chat?.id || 'Conversa';
       markReadBtn.disabled = false;
+      if (toggleBotBtn) toggleBotBtn.disabled = false;
       inputContainer.style.display = 'block';
       
-      // Foca no input
+      // Carrega status do bot
+      loadBotStatus();
+      
+      const container = document.getElementById('messages');
+      if (!container) return;
+      
+      container.style.display = 'flex';
+      container.style.flexDirection = 'column';
+      container.style.visibility = 'visible';
+      container.style.opacity = '1';
+      container.innerHTML = '<div style="text-align: center; padding: 20px; color: #94a3b8;">Carregando mensagens...</div>';
+      
       setTimeout(() => {
-        document.getElementById('messageInput').focus();
+        const input = document.getElementById('messageInput');
+        if (input) input.focus();
       }, 100);
       
-      await loadMessages();
+      await loadMessages(false);
+      
+      // Aguarda um pouco mais para garantir que as mensagens e o separador foram renderizados
+      setTimeout(() => {
+        const container = document.getElementById('messages');
+        if (!container) return;
+        
+        // Procura pelo separador de não lidas
+        const separator = container.querySelector('#unread-separator');
+        if (separator) {
+          // Se existe separador, faz scroll até ele
+          separator.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        } else {
+          // Se não existe separador, vai até o final como antes
+          container.scrollTop = container.scrollHeight;
+        }
+      }, 500);
     }
 
     function toggleSidebar() {
@@ -1080,14 +1190,21 @@
       // No mobile, troca entre lista e chat
       if (window.innerWidth <= 768) {
         if (chatArea.classList.contains('show')) {
-          // Volta para lista
+          // Fecha conversa e volta para lista
           chatArea.classList.remove('show');
           sidebar.style.display = 'block';
+          sidebar.style.zIndex = '1001';
+          chatArea.style.zIndex = '1000';
         } else {
           // Vai para chat (se tiver conversa selecionada)
           if (currentChatId) {
             sidebar.style.display = 'none';
             chatArea.classList.add('show');
+            chatArea.style.zIndex = '1000';
+          } else {
+            // Se não tem conversa selecionada, só mostra a sidebar
+            sidebar.style.display = 'block';
+            sidebar.style.zIndex = '1001';
           }
         }
       } else {
@@ -1111,17 +1228,25 @@
       }
     }
 
+    let isLoadingMessages = false;
     async function loadMessages(silent = false) {
-      if (!currentChatId) return;
+      if (!currentChatId || isLoadingMessages) return;
+      isLoadingMessages = true;
       
       try {
         const data = await fetchJSON('/api/chats/' + encodeURIComponent(currentChatId));
         const container = document.getElementById('messages');
-        const messageCount = container.querySelectorAll('.message').length;
+        if (!container) {
+          isLoadingMessages = false;
+          return;
+        }
         
-        // Se não é silencioso ou não tem mensagens ainda, renderiza tudo
-        if (!silent || messageCount === 0) {
-        if (data.messages.length === 0) {
+        container.style.display = 'flex';
+        container.style.flexDirection = 'column';
+        container.style.visibility = 'visible';
+        container.style.opacity = '1';
+        
+        if (!data.messages || data.messages.length === 0) {
           container.innerHTML = `
             <div class="empty-state">
               <div class="empty-icon">💬</div>
@@ -1129,35 +1254,248 @@
               <div class="empty-subtext">As mensagens desta conversa aparecerão aqui</div>
             </div>
           `;
+          isLoadingMessages = false;
           return;
         }
         
-          // Renderiza todas as mensagens (primeira vez)
-        container.innerHTML = '';
+        // Conjunto de IDs de mensagens já renderizadas (para evitar duplicatas)
+        const existingMsgIds = new Set(Array.from(container.querySelectorAll('.message[data-msg-id]')).map(m => {
+          const id = m.dataset.msgId;
+          return id || '';
+        }).filter(id => id));
+        
+        // Remove duplicatas por ID e também por similaridade (mesmo texto/direção em ~2s)
+        const seenIds = new Set();
+        const recentByKey = new Map(); // key: direction|normalizedText -> lastTimestamp
+        const normalize = (t) => String(t || '').trim().replace(/\s+/g, ' ').toLowerCase();
+        const uniqueMessages = data.messages.filter(m => {
+          const msgId = m.id || `${m.timestamp}_${m.direction}`;
+          if (seenIds.has(msgId)) return false; // Duplicada por ID
+          const key = `${m.direction}|${normalize(m.text)}`;
+          const lastTs = recentByKey.get(key);
+          const ts = typeof m.timestamp === 'number' ? m.timestamp : parseInt(String(m.timestamp||0),10);
+          if (!Number.isNaN(ts) && lastTs && Math.abs(ts - lastTs) <= 2000) {
+            return false; // Duplicada por texto/direção muito próxima no tempo
+          }
+          seenIds.add(msgId);
+          if (!Number.isNaN(ts)) recentByKey.set(key, ts);
+          return true;
+        });
+        
+        const newMsgIds = uniqueMessages.map(m => m.id || `${m.timestamp}_${m.direction}`);
+        const hasNewMessages = newMsgIds.some(id => id && !existingMsgIds.has(id));
+        const messageCount = container.querySelectorAll('.message').length;
+        const containerIsEmpty = container.innerHTML.trim() === '' || 
+                                   container.innerHTML.includes('Carregando') ||
+                                   container.innerHTML.includes('empty-state');
+        
+        // SEMPRE renderiza se não é silencioso (força renderização após enviar)
+        let shouldRender = !silent || messageCount === 0 || containerIsEmpty || hasNewMessages;
+        
+        // FORÇA renderização se acabou de enviar mensagem
+        if (!silent) {
+          shouldRender = true;
+        }
+        
+        if (shouldRender) {
+          if (!data.messages || data.messages.length === 0) {
+            container.innerHTML = `
+              <div class="empty-state">
+                <div class="empty-icon">💬</div>
+                <div class="empty-text">Nenhuma mensagem</div>
+                <div class="empty-subtext">As mensagens desta conversa aparecerão aqui</div>
+              </div>
+            `;
+            isLoadingMessages = false;
+            return;
+          }
+          
+          // Se já tem mensagens no DOM e há novas, adiciona apenas as novas
+          if (messageCount > 0 && !containerIsEmpty && hasNewMessages) {
+            
+            // Garante que o container está visível
+            container.style.display = 'flex';
+            container.style.flexDirection = 'column';
+            container.style.visibility = 'visible';
+            container.style.opacity = '1';
+            
+            // Ordena mensagens por timestamp (já filtradas sem duplicatas)
+            const sortedNew = [...uniqueMessages].sort((a, b) => {
+              const tsA = typeof a.timestamp === 'number' ? a.timestamp : parseInt(String(a.timestamp || 0), 10);
+              const tsB = typeof b.timestamp === 'number' ? b.timestamp : parseInt(String(b.timestamp || 0), 10);
+              return (isNaN(tsA) ? 0 : tsA) - (isNaN(tsB) ? 0 : tsB);
+            });
+            
+            // Adiciona apenas mensagens novas
+            let addedCount = 0;
+            sortedNew.forEach((msg) => {
+              const msgId = msg.id || `${msg.timestamp}_${msg.direction}`;
+              if (!existingMsgIds.has(msgId)) {
+                addedCount++;
+                
+                const div = document.createElement('div');
+                div.className = `message ${msg.direction === 'out' ? 'out' : 'in'}`;
+                div.dataset.msgId = msgId;
+                
+                // Calcula se está lida (baseado no unreadCount)
+                const unreadCount = Number(data.unreadCount || 0);
+                let unreadIndex = -1;
+                if (unreadCount > 0) {
+                  let countIn = 0;
+                  for (let i = sortedNew.length - 1; i >= 0; i--) {
+                    if (sortedNew[i].direction !== 'out') {
+                      countIn++;
+                      if (countIn === unreadCount) { 
+                        unreadIndex = i; 
+                        break; 
+                      }
+                    }
+                  }
+                }
+                const msgIndex = sortedNew.indexOf(msg);
+                const isRead = unreadIndex === -1 || msgIndex < unreadIndex;
+                const ticksClass = isRead ? 'ticks read' : 'ticks';
+                
+                // Renderiza conteúdo da mensagem (código reutilizado)
+                const isAudio = msg.text === '[áudio]';
+                const hasFile = !!msg.fileId;
+                const isPdf = hasFile && String(msg.fileType || '').includes('pdf');
+                const isImage = hasFile && String(msg.fileType || '').startsWith('image/');
+                const isQrCode = isImage && (msg.fileName?.toLowerCase().includes('qrcode') || msg.text?.includes('QRCode'));
+                const fileName = msg.fileName || 'arquivo.pdf';
+                
+                const cleanTextForFile = (text) => {
+                  if (!text) return '';
+                  let cleaned = text.replace(/\[arquivo\]\s*/gi, '');
+                  cleaned = cleaned.replace(/\[imagem\]\s*/gi, '');
+                  cleaned = cleaned.replace(/data:[^;]+;base64,[A-Za-z0-9+\/=]+/g, '');
+                  cleaned = cleaned.replace(/[A-Za-z0-9+\/=]{50,}/g, '');
+                  cleaned = cleaned.replace(/\s+/g, ' ').trim();
+                  if (cleaned.length < 5 && !/[a-zA-Z]{3,}/.test(cleaned)) return '';
+                  return cleaned;
+                };
+                
+                let contentHtml = '';
+                if (isAudio) {
+                  contentHtml = `
+                    <div class="audio-message" data-audio-id="${escapeHtml(msg.audioId || '')}">
+                      <button class="audio-btn-play" onclick="playAudio(this)">▶️</button>
+                      <div class="audio-waveform">
+                        ${Array(20).fill(0).map(() => `
+                          <div class="audio-waveform-bar" style="height: ${10 + Math.random() * 20}px"></div>
+                        `).join('')}
+                      </div>
+                      <div class="audio-duration">--:--</div>
+                    </div>`;
+                } else if (isPdf) {
+                  contentHtml = `
+                    <div class="pdf-viewer">
+                      <iframe src="/api/files/${encodeURIComponent(msg.fileId)}" type="application/pdf" 
+                              style="width: 100%; height: 400px; border: none; border-radius: 8px; background: #1e293b;">
+                      </iframe>
+                      <div style="margin-top: 8px;">
+                        <a href="/api/files/${encodeURIComponent(msg.fileId)}" target="_blank" 
+                           class="btn btn-secondary" style="text-decoration: none; display: inline-flex;">
+                          📄 Abrir PDF
+                        </a>
+                      </div>
+                    </div>`;
+                } else if (isQrCode || isImage) {
+                  const cleanText = cleanTextForFile(msg.text || '');
+                  contentHtml = `
+                    <div class="image-message">
+                      <img src="/api/files/${encodeURIComponent(msg.fileId)}" 
+                           alt="${escapeHtml(fileName)}" 
+                           style="max-width: 250px; max-height: 250px; border-radius: 12px; display: block; margin-bottom: 8px; cursor: pointer;"
+                           onclick="window.open(this.src, '_blank')">
+                      ${cleanText ? `<div class="message-text">${escapeHtml(cleanText)}</div>` : ''}
+                    </div>`;
+                } else if (hasFile) {
+                  const cleanText = cleanTextForFile(msg.text || '');
+                  contentHtml = `
+                    <a class="attachment" href="/api/files/${encodeURIComponent(msg.fileId)}" target="_blank" rel="noopener">
+                      <div class="icon">📄</div>
+                      <div class="name" title="${escapeHtml(fileName)}">${escapeHtml(fileName)}</div>
+                    </a>
+                    ${cleanText ? `<div class="message-text">${escapeHtml(cleanText)}</div>` : ''}`;
+                } else {
+                  const text = msg.text || '';
+                  contentHtml = `<div class="message-text">${escapeHtml(text)}</div>`;
+                }
+                
+                div.innerHTML = `
+                  <div class="message-bubble">
+                    ${contentHtml}
+                    <div class="message-meta">
+                      <span class="message-time">${formatTime(msg.timestamp)}</span>
+                      <span class="${ticksClass}" title="${isRead ? 'Lida' : 'Não lida'}">
+                        <span class="tick"></span><span class="tick"></span>
+                      </span>
+                    </div>
+                  </div>
+                `;
+                
+                container.appendChild(div);
+              }
+            });
+            
+            requestAnimationFrame(() => {
+              container.scrollTop = container.scrollHeight;
+            });
+            
+            isLoadingMessages = false;
+            return;
+          }
+          
+          // Renderiza todas as mensagens do banco
+          container.innerHTML = '';
+          container.style.display = 'flex';
+          container.style.flexDirection = 'column';
+          container.style.visibility = 'visible';
+          container.style.opacity = '1';
+          
+          const sortedMessages = [...uniqueMessages].sort((a, b) => {
+            const tsA = typeof a.timestamp === 'number' ? a.timestamp : parseInt(String(a.timestamp || 0), 10);
+            const tsB = typeof b.timestamp === 'number' ? b.timestamp : parseInt(String(b.timestamp || 0), 10);
+            return (isNaN(tsA) ? 0 : tsA) - (isNaN(tsB) ? 0 : tsB);
+          });
+          
           const unreadCount = Number(data.unreadCount || 0);
           // Coloca separador na PRIMEIRA mensagem NÃO LIDA do CLIENTE (percorrendo de trás para frente)
           let unreadIndex = -1;
           if (unreadCount > 0) {
             let countIn = 0;
-            for (let i = data.messages.length - 1; i >= 0; i--) {
-              if (data.messages[i].direction !== 'out') {
+            for (let i = sortedMessages.length - 1; i >= 0; i--) {
+              if (sortedMessages[i].direction !== 'out') {
                 countIn++;
                 if (countIn === unreadCount) { unreadIndex = i; break; }
               }
             }
           }
 
-          data.messages.forEach((msg, idx) => {
-            if (idx === unreadIndex) {
-              const sep = document.createElement('div');
-              sep.className = 'unread-separator';
-              sep.innerHTML = '<span class="unread-label">NÃO LIDAS</span>';
-              container.appendChild(sep);
-            }
-            const msgId = msg.id || `${msg.timestamp}_${msg.direction}`;
-          const div = document.createElement('div');
-          div.className = `message ${msg.direction === 'out' ? 'out' : 'in'}`;
-            div.dataset.msgId = msgId;
+          let renderedInLoop = 0;
+          let renderedIn = 0;
+          let renderedOut = 0;
+          
+          sortedMessages.forEach((msg, idx) => {
+            try {
+              if (idx === unreadIndex) {
+                const sep = document.createElement('div');
+                sep.className = 'unread-separator';
+                sep.id = 'unread-separator';
+                sep.innerHTML = '<span class="unread-label">NÃO LIDAS</span>';
+                container.appendChild(sep);
+              }
+              const msgId = msg.id || `${msg.timestamp}_${msg.direction}`;
+              const div = document.createElement('div');
+              div.className = `message ${msg.direction === 'out' ? 'out' : 'in'}`;
+              div.dataset.msgId = msgId;
+              
+              // FORÇA visibilidade da mensagem
+              div.style.display = 'flex';
+              div.style.visibility = 'visible';
+              div.style.opacity = '1';
+              div.style.minHeight = 'auto';
             
             // Verifica se é mensagem de áudio
             const isAudio = msg.text === '[áudio]';
@@ -1236,7 +1574,14 @@
                 </a>
                 ${cleanText ? `<div class=\"message-text\">${escapeHtml(cleanText)}</div>` : ''}`;
             } else {
-              contentHtml = `<div class=\"message-text\">${escapeHtml(msg.text || '')}</div>`;
+              // Garante que o texto seja exibido, mesmo que curto
+              const text = msg.text || '';
+              if (text.trim() || text.length === 0) {
+                contentHtml = `<div class=\"message-text\">${escapeHtml(text)}</div>`;
+              } else {
+                // Se texto estiver vazio mas mensagem existe, mostra placeholder
+                contentHtml = `<div class=\"message-text\">${escapeHtml(text || '[sem texto]')}</div>`;
+              }
             }
           
           div.innerHTML = `
@@ -1250,163 +1595,167 @@
                 </div>
             </div>
           `;
-          container.appendChild(div);
-        });
-        
-          // Scroll: prioriza ir até o separador de NÃO LIDAS; se não houver, vai ao final
-          setTimeout(() => {
-            const sep = container.querySelector('.unread-separator');
-            if (sep) {
-              const top = sep.offsetTop - 120; // offset maior para mostrar mais contexto abaixo
-              container.scrollTop = top < 0 ? 0 : top;
-            } else {
-        container.scrollTop = container.scrollHeight;
-            }
-          }, 100);
-          
-        } else if (data.messages.length > messageCount) {
-          // Só atualiza se houver novas mensagens
-          const existingIds = new Set(Array.from(container.querySelectorAll('.message')).map(m => m.dataset.msgId || ''));
-          
-          const unreadCount = Number(data.unreadCount || 0);
-          let unreadIndex = -1;
-          if (unreadCount > 0) {
-            let countIn = 0;
-            for (let i = data.messages.length - 1; i >= 0; i--) {
-              if (data.messages[i].direction !== 'out') {
-                countIn++;
-                if (countIn === unreadCount) { unreadIndex = i; break; }
-              }
-            }
-          }
-          data.messages.forEach((msg, idx) => {
-            const msgId = msg.id || `${msg.timestamp}_${msg.direction}`;
-            if (!existingIds.has(msgId)) {
-              const div = document.createElement('div');
-              div.className = `message ${msg.direction === 'out' ? 'out' : 'in'}`;
-              div.dataset.msgId = msgId;
-              
-              // Verifica se é mensagem de áudio
-              const isAudio = msg.text === '[áudio]';
-              const isRead = unreadIndex === -1 || idx < unreadIndex;
-              const ticksClass = isRead ? 'ticks read' : 'ticks';
-              const hasFile = !!msg.fileId;
-              const isPdf = hasFile && String(msg.fileType || '').includes('pdf');
-              const isImage = hasFile && String(msg.fileType || '').startsWith('image/');
-              const isQrCode = isImage && (msg.fileName?.toLowerCase().includes('qrcode') || msg.text?.includes('QRCode'));
-              const fileName = msg.fileName || 'arquivo.pdf';
-              
-              // Função para limpar base64 do texto quando há arquivo
-              const cleanTextForFile2 = (text) => {
-                if (!text) return '';
-                // Remove prefixos comuns de base64
-                let cleaned = text.replace(/\[arquivo\]\s*/gi, '');
-                cleaned = cleaned.replace(/\[imagem\]\s*/gi, '');
-                // Remove data URLs completas (data:image/..., data:application/...)
-                cleaned = cleaned.replace(/data:[^;]+;base64,[A-Za-z0-9+\/=]+/g, '');
-                // Remove strings base64 longas sem prefixo (mais de 50 caracteres alfanuméricos consecutivos)
-                cleaned = cleaned.replace(/[A-Za-z0-9+\/=]{50,}/g, '');
-                // Remove múltiplos espaços
-                cleaned = cleaned.replace(/\s+/g, ' ').trim();
-                // Se sobrou apenas espaços ou muito curto, retorna vazio
-                if (cleaned.length < 5 && !/[a-zA-Z]{3,}/.test(cleaned)) {
-                  return '';
-                }
-                return cleaned;
-              };
-              
-              let contentHtml2 = '';
-              if (isAudio) {
-                contentHtml2 = `
-                  <div class=\"audio-message\" data-audio-id=\"${escapeHtml(msg.audioId || '')}\"> 
-                    <button class=\"audio-btn-play\" onclick=\"playAudio(this)\">▶️</button>
-                    <div class=\"audio-waveform\">
-                      ${Array(20).fill(0).map(() => `
-                        <div class=\\\"audio-waveform-bar\\\" style=\\\"height: ${10 + Math.random() * 20}px\\\"></div>
-                      `).join('')}
-                    </div>
-                    <div class=\"audio-duration\">--:--</div>
-                  </div>`;
-              } else if (isPdf) {
-                // Renderiza PDF com visualizador embutido - SEM mostrar texto quando há PDF
-                // O PDF já é auto-explicativo, não precisa mostrar texto adicional
-                contentHtml2 = `
-                  <div class=\"pdf-viewer\">
-                    <iframe src=\"/api/files/${encodeURIComponent(msg.fileId)}\" type=\"application/pdf\" 
-                            style=\"width: 100%; height: 400px; border: none; border-radius: 8px; background: #1e293b;\">
-                    </iframe>
-                    <div style=\"margin-top: 8px;\">
-                      <a href=\"/api/files/${encodeURIComponent(msg.fileId)}\" target=\"_blank\" 
-                         class=\"btn btn-secondary\" style=\"text-decoration: none; display: inline-flex;\">
-                        📄 Abrir PDF
-                      </a>
-                    </div>
-                  </div>`;
-              } else if (isQrCode || isImage) {
-                // Renderiza QR code/imagem como imagem
-                const cleanText = cleanTextForFile2(msg.text || '');
-                contentHtml2 = `
-                  <div class=\"image-message\">
-                    <img src=\"/api/files/${encodeURIComponent(msg.fileId)}\" 
-                         alt=\"${escapeHtml(fileName)}\" 
-                         style=\"max-width: 250px; max-height: 250px; border-radius: 12px; display: block; margin-bottom: 8px; cursor: pointer;\"
-                         onclick=\"window.open(this.src, '_blank')\">
-                    ${cleanText ? `<div class=\"message-text\">${escapeHtml(cleanText)}</div>` : ''}
-                  </div>`;
-              } else if (hasFile) {
-                const cleanText = cleanTextForFile2(msg.text || '');
-                contentHtml2 = `
-                  <a class=\"attachment\" href=\"/api/files/${encodeURIComponent(msg.fileId)}\" target=\"_blank\" rel=\"noopener\">
-                    <div class=\"icon\">📄</div>
-                    <div class=\"name\" title=\"${escapeHtml(fileName)}\">${escapeHtml(fileName)}</div>
-                  </a>
-                  ${cleanText ? `<div class=\"message-text\">${escapeHtml(cleanText)}</div>` : ''}`;
-              } else {
-                contentHtml2 = `<div class=\"message-text\">${escapeHtml(msg.text || '')}</div>`;
-              }
-
-              div.innerHTML = `
-                <div class=\"message-bubble\">
-                  ${contentHtml2}
-                  <div class=\"message-meta\">
-                    <span class=\"message-time\">${formatTime(msg.timestamp)}</span>
-                    <span class=\"${ticksClass}\" title=\"${isRead ? 'Lida' : 'Não lida'}\">
-                      <span class=\"tick\"></span><span class=\"tick\"></span>
-                    </span>
-                  </div>
-                </div>
-              `;
+              // Adiciona mensagem ao container
               container.appendChild(div);
+              renderedInLoop++;
               
-              // Scroll suave só para novas mensagens
-              setTimeout(() => {
-                container.scrollTop = container.scrollHeight;
-              }, 100);
+              // Conta mensagens por direção
+              if (msg.direction === 'in') {
+                renderedIn++;
+              } else {
+                renderedOut++;
+              }
+              
+              if (renderedInLoop % 100 === 0) {
+                container.offsetHeight;
+              }
+            } catch (msgError) {
+              // Ignora erros individuais
             }
           });
+        
+          container.offsetHeight;
+          container.style.display = 'flex';
+          container.style.flexDirection = 'column';
+          container.style.visibility = 'visible';
+          container.style.opacity = '1';
+          
+          if (container.parentElement) {
+            container.parentElement.style.display = 'flex';
+          }
+          
+          requestAnimationFrame(() => {
+            container.style.display = 'flex';
+            container.style.flexDirection = 'column';
+            container.style.visibility = 'visible';
+            container.style.opacity = '1';
+            
+            const allMessages = container.querySelectorAll('.message');
+            allMessages.forEach(msg => {
+              msg.style.display = 'flex';
+              msg.style.visibility = 'visible';
+              msg.style.opacity = '1';
+            });
+            
+            setTimeout(() => {
+              // Procura pelo separador de não lidas
+              const separator = container.querySelector('#unread-separator');
+              if (separator) {
+                // Se existe separador, faz scroll até ele
+                separator.scrollIntoView({ behavior: 'smooth', block: 'center' });
+              } else {
+                // Se não existe separador, vai até o final como antes
+                container.scrollTop = container.scrollHeight;
+              }
+            }, 300);
+          });
+          
+          isLoadingMessages = false;
         }
         
         // Atualiza botão
         const markReadBtn = document.getElementById('markRead');
-        markReadBtn.disabled = data.unreadCount === 0;
-        markReadBtn.textContent = data.unreadCount > 0 ? 
-          `✓ Marcar como lido (${data.unreadCount})` : 
-          '✓ Marcar como lido';
-          
+        if (markReadBtn) {
+          markReadBtn.disabled = data.unreadCount === 0;
+          markReadBtn.textContent = data.unreadCount > 0 ? 
+            `✓ Marcar como lido (${data.unreadCount})` : 
+            '✓ Marcar como lido';
+        }
       } catch (e) {
-        console.error('Erro ao carregar mensagens:', e);
+        const container = document.getElementById('messages');
+        if (container && !silent) {
+          container.innerHTML = `
+            <div class="empty-state" style="color: #ef4444;">
+              <div class="empty-icon">⚠️</div>
+              <div class="empty-text">Erro ao carregar mensagens</div>
+              <div class="empty-subtext">${e.message || 'Erro desconhecido'}</div>
+            </div>
+          `;
+        }
+      } finally {
+        isLoadingMessages = false;
       }
     }
 
     async function markRead() {
       if (!currentChatId) return;
-      
       try {
         await fetchJSON('/api/chats/' + encodeURIComponent(currentChatId) + '/mark-read', { method: 'POST' });
         await loadChats();
         await loadMessages();
       } catch (e) {
-        console.error('Erro ao marcar como lido:', e);
+        // Ignora erros
+      }
+    }
+
+    async function loadBotStatus() {
+      if (!currentChatId) return;
+      try {
+        const data = await fetchJSON('/api/chats/' + encodeURIComponent(currentChatId) + '/bot-status');
+        const btn = document.getElementById('toggleBot');
+        if (!btn) return;
+        
+        if (data.paused) {
+          btn.innerHTML = '⏸️ Bot: Pausado';
+          btn.className = 'btn btn-secondary';
+        } else {
+          btn.innerHTML = '🤖 Bot: Ativo';
+          btn.className = 'btn btn-secondary';
+        }
+      } catch (e) {
+        // Ignora erros
+      }
+    }
+
+    async function toggleBot() {
+      if (!currentChatId) return;
+      const btn = document.getElementById('toggleBot');
+      if (!btn) return;
+      
+      const originalText = btn.innerHTML;
+      btn.disabled = true;
+      btn.innerHTML = '<div class="loading"></div> Alterando...';
+      
+      try {
+        const data = await fetchJSON('/api/chats/' + encodeURIComponent(currentChatId) + '/toggle-bot', { method: 'POST' });
+        
+        if (data.paused) {
+          btn.innerHTML = '⏸️ Bot: Pausado';
+        } else {
+          btn.innerHTML = '🤖 Bot: Ativo';
+        }
+        
+        setTimeout(() => {
+          btn.disabled = false;
+        }, 500);
+      } catch (e) {
+        btn.innerHTML = originalText;
+        btn.disabled = false;
+        alert('Erro ao alterar status do bot: ' + (e.message || 'Erro desconhecido'));
+      }
+    }
+
+    async function endAttendant() {
+      if (!currentChatId) return;
+      const btn = document.getElementById('endAttendant');
+      if (!btn) return;
+      
+      const originalText = btn.innerHTML;
+      btn.disabled = true;
+      btn.innerHTML = '<div class="loading"></div> Finalizando...';
+      
+      try {
+        await fetchJSON('/api/chats/' + encodeURIComponent(currentChatId) + '/end-attendant', { method: 'POST' });
+        await loadMessages();
+        btn.innerHTML = '✓ Finalizado';
+        setTimeout(() => {
+          btn.innerHTML = originalText;
+          btn.disabled = false;
+        }, 2000);
+      } catch (e) {
+        btn.innerHTML = originalText;
+        btn.disabled = false;
+        alert('Erro ao finalizar atendimento: ' + (e.message || 'Erro desconhecido'));
       }
     }
 
@@ -1424,6 +1773,53 @@
       renderChats(filteredChats);
     }
 
+    function addMessageToView(msg) {
+      const container = document.getElementById('messages');
+      if (!container) return;
+      
+      // Remove estado vazio se existir
+      const emptyState = container.querySelector('.empty-state');
+      if (emptyState) {
+        container.innerHTML = '';
+        container.style.display = 'flex';
+        container.style.flexDirection = 'column';
+      }
+      
+      const msgId = msg.id || `${msg.timestamp}_${msg.direction}`;
+      
+      // Verifica se mensagem já existe
+      const existing = container.querySelector(`[data-msg-id="${msgId}"]`);
+      if (existing) return;
+      
+      const div = document.createElement('div');
+      div.className = `message ${msg.direction === 'out' ? 'out' : 'in'}`;
+      div.dataset.msgId = msgId;
+      
+      const isRead = msg.direction === 'out';
+      const ticksClass = isRead ? 'ticks read' : 'ticks';
+      
+      const contentHtml = `<div class="message-text">${escapeHtml(msg.text || '')}</div>`;
+      
+      div.innerHTML = `
+        <div class="message-bubble">
+          ${contentHtml}
+          <div class="message-meta">
+            <span class="message-time">${formatTime(msg.timestamp)}</span>
+            <span class="${ticksClass}" title="${isRead ? 'Lida' : 'Não lida'}">
+              <span class="tick"></span><span class="tick"></span>
+            </span>
+          </div>
+        </div>
+      `;
+      
+      container.appendChild(div);
+      
+      // Scroll para o final
+      setTimeout(() => {
+        container.scrollTop = container.scrollHeight;
+      }, 50);
+    }
+
     async function sendMessage() {
       const input = document.getElementById('messageInput');
       const text = input.value.trim();
@@ -1436,27 +1832,59 @@
       input.disabled = true;
       sendBtn.innerHTML = '<div class="loading"></div> Enviando...';
       
+      // Salva o texto antes de limpar
+      const textToSend = text;
+      
+      // Limpa input imediatamente
+      input.value = '';
+      
       try {
+        // Envia mensagem para o backend (salva no banco)
         const response = await fetch(`/api/chats/${encodeURIComponent(currentChatId)}/send`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ text })
+          body: JSON.stringify({ text: textToSend })
         });
         
+        // Aguarda um momento para garantir que foi salva no banco
+        await new Promise(resolve => setTimeout(resolve, 800));
+        
+        // FORÇA recarregamento não silencioso das mensagens do banco
+        await loadMessages(false);
+        
+        // Aguarda um pouco mais e recarrega novamente para garantir
+        await new Promise(resolve => setTimeout(resolve, 300));
+        await loadMessages(false);
+        
+        // Recarrega lista de conversas para atualizar preview
+        await loadChats(false);
+        
+        // Garante que a conversa atual seja reaberta e renderizada
+        try {
+          if (currentChatId) {
+            await selectChat(currentChatId);
+          }
+        } catch (_) {}
+        
+        // Verifica se houve erro na resposta mas não bloqueia (mensagem já está salva)
         if (!response.ok) {
           const error = await response.json();
-          throw new Error(error.error || 'Erro ao enviar');
+          // Mostra aviso mas não impede o uso (mensagem já está no painel)
+          console.warn('Aviso no envio:', error.error || 'Erro desconhecido');
         }
         
-        // Limpa input
-        input.value = '';
-        
-        // Recarrega mensagens
-        await loadMessages();
-        
       } catch (e) {
-        console.error('Erro ao enviar:', e);
-        alert('Erro ao enviar mensagem: ' + e.message);
+        // Mesmo com erro, tenta recarregar mensagens (a mensagem pode ter sido salva)
+        try {
+          await new Promise(resolve => setTimeout(resolve, 300));
+          await loadMessages(false);
+          await loadChats(true);
+        } catch (loadError) {
+          // Ignora erro ao recarregar
+        }
+        
+        // Não volta o texto no input (mensagem pode ter sido salva)
+        // Não mostra erro para não confundir (mensagem já aparece no painel)
       } finally {
         sendBtn.disabled = false;
         input.disabled = false;
@@ -1511,8 +1939,7 @@
         };
 
         // Inicia gravação
-        mediaRecorder.start(100); // Coleta chunks a cada 100ms
-        console.log('Gravação iniciada, estado:', mediaRecorder.state);
+        mediaRecorder.start(100);
         
         // Mostra controles de gravação
         document.getElementById('messageInput').style.display = 'none';
@@ -1529,7 +1956,6 @@
         }, 1000);
 
       } catch (e) {
-        console.error('Erro ao iniciar gravação:', e);
         alert('Erro ao acessar microfone: ' + e.message);
       }
     }
@@ -1598,10 +2024,14 @@
           throw new Error(error.error || 'Erro ao enviar áudio');
         }
         
-        await loadMessages();
+        // Recarrega mensagens (NÃO silencioso para garantir renderização)
+        await loadMessages(false);
+        
+        // Recarrega lista de conversas para atualizar preview
+        await loadChats(true);
         
       } catch (e) {
-        console.error('❌ Erro ao enviar áudio:', e);
+        // Ignora erros
       } finally {
         sendBtn.textContent = originalText;
         sendBtn.disabled = false;
@@ -1643,7 +2073,6 @@
         const audioMessage = messageDiv.querySelector('.audio-message');
         const audioId = audioMessage ? audioMessage.dataset.audioId : null;
         if (!audioId) {
-          console.error('AudioId não encontrado');
           alert('Erro: ID do áudio não encontrado');
           return;
         }
@@ -1670,7 +2099,6 @@
         
         await audio.play();
       } catch (e) {
-        console.error('Erro ao reproduzir áudio:', e);
         button.dataset.playing = 'false';
         button.textContent = '▶️';
       }
@@ -1678,6 +2106,7 @@
 
     // Event listeners
     document.getElementById('markRead').addEventListener('click', markRead);
+    document.getElementById('toggleBot').addEventListener('click', toggleBot);
     document.getElementById('searchInput').addEventListener('input', (e) => {
       filterChats(e.target.value);
     });
@@ -1695,14 +2124,51 @@
       }
     });
 
-    // Auto-refresh silencioso (sem recarregar tudo)
-    setInterval(() => loadChats(true), 5000);
+    // Auto-refresh: atualiza chats a cada 10 segundos (silencioso)
     setInterval(() => {
-      if (currentChatId) loadMessages(true);
+      loadChats(true).catch(() => {});
+    }, 10000);
+    
+    // Auto-refresh mensagens: só atualiza se tiver chat aberto (silencioso)
+    setInterval(() => {
+      if (currentChatId) {
+        loadMessages(true).catch(() => {});
+        loadBotStatus().catch(() => {}); // Atualiza status do bot também
+      }
     }, 5000);
+    
+    // Carrega estatísticas
+    async function loadStats() {
+      try {
+        const stats = await fetchJSON('/api/stats');
+        document.getElementById('statTotalChats').textContent = stats.totalChats || 0;
+        document.getElementById('statTotalUnread').textContent = stats.totalUnread || 0;
+        document.getElementById('statActiveToday').textContent = stats.activeToday || 0;
+        document.getElementById('statTotalMessages').textContent = stats.totalMessages || 0;
+      } catch (e) {
+        // Ignora erros
+      }
+    }
+    
+    // Auto-refresh das estatísticas a cada 10 segundos
+    setInterval(() => loadStats(), 10000);
 
     // Inicialização
+    loadStats();
     loadChats();
+
+    async function waitAndRefresh(expectedIncrease = 0) {
+      // Tenta 3 vezes com pequenos intervalos para garantir que o banco persistiu
+      for (let i = 0; i < 3; i++) {
+        await loadMessages().catch(()=>{});
+        await new Promise(r => setTimeout(r, 600));
+      }
+    }
+
+    async function sendCurrent() {
+      const input = document.getElementById('text'); const text = input.value.trim(); if (!text || !currentChatId) return; input.disabled = true;
+      try { await fetchJSON(`/api/chats/${encodeURIComponent(currentChatId)}/send`, { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ text }) }); input.value=''; await waitAndRefresh(); await loadChats(); } catch(e) {} finally { input.disabled=false; input.focus(); }
+    }
   </script>
 </body>
 </html>

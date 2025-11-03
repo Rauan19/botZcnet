@@ -120,6 +120,27 @@ class App {
                 limits: { fileSize: 16 * 1024 * 1024 } // 16MB
             });
 
+            // API: estatísticas do dashboard
+            app.get('/api/stats', (req, res) => {
+                try {
+                    const stats = messageStore.getStats();
+                    res.json(stats);
+                } catch (e) {
+                    res.status(500).json({ error: 'internal_error' });
+                }
+            });
+
+            // API: limpar todas as conversas e mensagens
+            app.post('/api/chats/clear', (req, res) => {
+                try {
+                    const ok = messageStore.clearAll();
+                    if (!ok) return res.status(500).json({ ok: false });
+                    res.json({ ok: true });
+                } catch (e) {
+                    res.status(500).json({ ok: false });
+                }
+            });
+
             // API: lista de chats
             app.get('/api/chats', (req, res) => {
                 try {
@@ -151,6 +172,47 @@ class App {
                 }
             });
 
+            // API: verificar status do bot para um chat
+            app.get('/api/chats/:id/bot-status', (req, res) => {
+                try {
+                    const chatId = req.params.id;
+                    const isPaused = this.bot.isBotPausedForChat(chatId);
+                    res.json({ paused: isPaused });
+                } catch (e) {
+                    res.status(500).json({ error: 'internal_error' });
+                }
+            });
+
+            // API: alternar bot (ativar/desativar)
+            app.post('/api/chats/:id/toggle-bot', (req, res) => {
+                try {
+                    const chatId = req.params.id;
+                    const isPaused = this.bot.isBotPausedForChat(chatId);
+                    
+                    if (isPaused) {
+                        // Reativa o bot
+                        this.bot.reactivateBotForChat(chatId);
+                        res.json({ ok: true, paused: false, message: 'Bot reativado' });
+                    } else {
+                        // Pausa o bot
+                        this.bot.pauseBotForChat(chatId);
+                        res.json({ ok: true, paused: true, message: 'Bot pausado' });
+                    }
+                } catch (e) {
+                    res.status(500).json({ error: 'internal_error' });
+                }
+            });
+
+            // API: finalizar atendimento (reativa bot) - mantido para compatibilidade
+            app.post('/api/chats/:id/end-attendant', (req, res) => {
+                try {
+                    this.bot.reactivateBotForChat(req.params.id);
+                    res.json({ ok: true });
+                } catch (e) {
+                    res.status(500).json({ error: 'internal_error' });
+                }
+            });
+
             // API: enviar mensagem
             app.post('/api/chats/:id/send', async (req, res) => {
                 try {
@@ -162,18 +224,23 @@ class App {
                     }
 
                     // Envia mensagem pelo bot
+                    // O sendMessage agora salva no banco ANTES de enviar
                     const result = await this.bot.sendMessage(chatId, text.trim());
-                    
-                    // Registra mensagem enviada
-                    messageStore.recordOutgoingMessage({
-                        chatId: chatId,
-                        text: text.trim(),
-                        timestamp: Date.now()
-                    });
 
-                    res.json({ ok: true, messageId: result?.id || null });
+                    // Retorna sucesso mesmo se o envio falhar (mensagem já está salva no banco)
+                    res.json({ ok: true, messageId: result?.id || null, saved: true });
                 } catch (e) {
                     console.error('❌ Erro ao enviar mensagem:', e);
+                    // Mesmo com erro, tenta salvar a mensagem no banco para aparecer no painel
+                    try {
+                        messageStore.recordOutgoingMessage({
+                            chatId: chatId,
+                            text: text.trim(),
+                            timestamp: Date.now()
+                        });
+                    } catch (saveError) {
+                        // Ignora erro ao salvar
+                    }
                     res.status(500).json({ error: e.message || 'internal_error' });
                 }
             });
