@@ -547,7 +547,25 @@ class WhatsAppBot {
                 // Se cliente enviou apenas PDF, já foi tratado acima e o bot foi pausado
                 let doc = null;
                 if (!isPdf && finalBody && finalBody.trim() && finalBody !== '[arquivo]') {
-                    doc = this.extractDocument(finalBody);
+                    // Verifica se NÃO é URL, IP ou link antes de extrair documento
+                    const textLower = finalBody.toLowerCase().trim();
+                    const isUrl = textLower.startsWith('http://') || 
+                                  textLower.startsWith('https://') || 
+                                  textLower.startsWith('www.') ||
+                                  textLower.includes('://') ||
+                                  /^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}/.test(textLower) || // IP address
+                                  textLower.includes('.com') ||
+                                  textLower.includes('.br') ||
+                                  textLower.includes('.net') ||
+                                  textLower.includes('.org');
+                    
+                    // Só tenta extrair CPF se NÃO for URL/link e se for texto curto (até 30 chars) ou apenas números
+                    const isShortText = finalBody.trim().length <= 30;
+                    const isOnlyNumbers = /^\d+$/.test(finalBody.trim());
+                    
+                    if (!isUrl && (isOnlyNumbers || isShortText)) {
+                        doc = this.extractDocument(finalBody);
+                    }
                 }
                 
                 if (doc) {
@@ -2079,14 +2097,35 @@ Para gerar seu boleto ou PIX, envie seu *CPF* (somente números)
     // ===== Utilidades de parsing/validação =====
     extractDocument(text) {
         if (!text) return null;
-        const digits = (text.match(/\d/g) || []).join('');
-        if (digits.length >= 11) {
-            const doc = digits.slice(0, 14);
-            // Valida CPF básico (11 dígitos) ou CNPJ (14 dígitos)
-            if (doc.length === 11 || doc.length === 14) {
-                return doc;
-            }
+        
+        // Ignora URLs, IPs e links
+        const textLower = text.toLowerCase().trim();
+        if (textLower.startsWith('http://') || 
+            textLower.startsWith('https://') || 
+            textLower.startsWith('www.') ||
+            textLower.includes('://') ||
+            /^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}/.test(textLower) ||
+            textLower.includes('.com') ||
+            textLower.includes('.br') ||
+            textLower.includes('.net') ||
+            textLower.includes('.org')) {
+            return null; // É URL/link, não processa como CPF
         }
+        
+        // Remove caracteres não numéricos e junta os dígitos
+        const digits = (text.match(/\d/g) || []).join('');
+        
+        // CPF deve ter exatamente 11 dígitos, CNPJ 14 dígitos
+        // Mas também aceita se tiver apenas números e o tamanho correto
+        if (digits.length === 11) {
+            return digits; // CPF
+        } else if (digits.length === 14) {
+            return digits; // CNPJ
+        } else if (digits.length > 11 && digits.length < 14) {
+            // Se tiver entre 12-13 dígitos, pode ser CPF com alguns caracteres extras, pega só os 11 primeiros
+            return digits.slice(0, 11);
+        }
+        
         return null;
     }
 
