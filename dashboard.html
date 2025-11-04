@@ -1968,6 +1968,32 @@
       }
 
       try {
+        // Verifica se a API de mídia está disponível
+        if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+          // Fallback para versões antigas do navegador
+          const getUserMedia = navigator.getUserMedia || 
+                               navigator.webkitGetUserMedia || 
+                               navigator.mozGetUserMedia || 
+                               navigator.msGetUserMedia;
+          
+          if (!getUserMedia) {
+            alert('Erro: Seu navegador não suporta gravação de áudio.\n\nA gravação de áudio requer HTTPS em produção ou acesso localhost.');
+            return;
+          }
+          
+          // Usa fallback para navegadores antigos
+          getUserMedia.call(navigator, { audio: true }, 
+            (stream) => {
+              savedStream = stream;
+              continueRecording(stream);
+            },
+            (error) => {
+              alert('Erro ao acessar microfone: ' + error.message + '\n\nCertifique-se de que o site está em HTTPS.');
+            }
+          );
+          return;
+        }
+        
         // Usa stream salvo se existir
         let stream = savedStream;
         
@@ -1977,6 +2003,29 @@
           savedStream = stream; // Salva para reutilizar
         }
         
+        continueRecording(stream);
+
+      } catch (e) {
+        let errorMsg = 'Erro ao acessar microfone: ' + e.message;
+        
+        // Mensagens mais específicas para erros comuns
+        if (e.name === 'NotAllowedError' || e.name === 'PermissionDeniedError') {
+          errorMsg = 'Permissão de microfone negada. Por favor, permita o acesso ao microfone nas configurações do navegador.';
+        } else if (e.name === 'NotFoundError' || e.name === 'DevicesNotFoundError') {
+          errorMsg = 'Nenhum microfone encontrado. Verifique se há um microfone conectado.';
+        } else if (e.name === 'NotSupportedError' || e.name === 'ConstraintNotSatisfiedError') {
+          errorMsg = 'Seu navegador não suporta gravação de áudio ou o site precisa estar em HTTPS.';
+        } else if (e.message && e.message.includes('getUserMedia')) {
+          errorMsg = 'Erro: Acesso ao microfone não disponível. Certifique-se de que o site está em HTTPS em produção.';
+        }
+        
+        alert(errorMsg);
+        console.error('Erro ao iniciar gravação:', e);
+      }
+    }
+    
+    function continueRecording(stream) {
+      try {
         // Tenta diferentes codecs suportados
         let mimeType = 'audio/webm;codecs=opus';
         if (!MediaRecorder.isTypeSupported(mimeType)) {
@@ -2016,9 +2065,10 @@
           const secs = (elapsed % 60).toString().padStart(2, '0');
           document.getElementById('recordingTime').textContent = `${mins}:${secs}`;
         }, 1000);
-
+        
       } catch (e) {
-        alert('Erro ao acessar microfone: ' + e.message);
+        console.error('Erro ao configurar MediaRecorder:', e);
+        alert('Erro ao configurar gravação: ' + e.message);
       }
     }
 
@@ -2177,6 +2227,44 @@
     document.getElementById('sendAudio').addEventListener('click', sendRecordedAudio);
     document.getElementById('cancelAudio').addEventListener('click', cancelRecording);
     document.getElementById('menuToggle').addEventListener('click', toggleSidebar);
+    
+    // Verifica se está em contexto seguro (HTTPS ou localhost) para habilitar gravação de áudio
+    (function checkAudioSupport() {
+      const isSecureContext = window.isSecureContext || 
+                             location.protocol === 'https:' || 
+                             location.hostname === 'localhost' || 
+                             location.hostname === '127.0.0.1' ||
+                             location.hostname === '[::1]';
+      
+      const audioBtn = document.getElementById('audioBtn');
+      if (!isSecureContext) {
+        // Desabilita botão de áudio se não estiver em contexto seguro
+        if (audioBtn) {
+          audioBtn.disabled = true;
+          audioBtn.title = 'Gravação de áudio requer HTTPS ou localhost';
+          audioBtn.style.opacity = '0.5';
+          audioBtn.style.cursor = 'not-allowed';
+          console.warn('⚠️ Gravação de áudio desabilitada: Site precisa estar em HTTPS ou localhost');
+        }
+      } else {
+        // Verifica se getUserMedia está disponível
+        if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+          const getUserMedia = navigator.getUserMedia || 
+                               navigator.webkitGetUserMedia || 
+                               navigator.mozGetUserMedia || 
+                               navigator.msGetUserMedia;
+          
+          if (!getUserMedia) {
+            if (audioBtn) {
+              audioBtn.disabled = true;
+              audioBtn.title = 'Navegador não suporta gravação de áudio';
+              audioBtn.style.opacity = '0.5';
+              audioBtn.style.cursor = 'not-allowed';
+            }
+          }
+        }
+      }
+    })();
     
     // Enter para enviar
     document.getElementById('messageInput').addEventListener('keypress', (e) => {

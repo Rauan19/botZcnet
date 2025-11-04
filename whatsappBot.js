@@ -2824,33 +2824,7 @@ Copie o código COMPLETO, do início ao fim!`;
         
         console.log(`🤖 Bot reativado para chat ${chatId} pelo atendente.`);
         
-        // Envia mensagem ao cliente apenas se estava pausado antes
-        if (wasPaused && sendMessage && this.client) {
-            try {
-                const message = `🤖 *Bot reativado.*\n\nDigite o *número* da opção para continuar:`;
-                await this.sendKeepingUnread(() => this.client.sendText(chatId, message), chatId, message);
-                
-                // Mostra menu após 1 segundo
-                setTimeout(async () => {
-                    try {
-                        const menuMsg = `*COMO POSSO AJUDAR?*
-
-*1️⃣ PAGAMENTO / SEGUNDA VIA*
-
-*2️⃣ SUPORTE TÉCNICO*
-
-*3️⃣ FALAR COM ATENDENTE*
-
-*4️⃣ OUTRAS DÚVIDAS*
-
-Digite o *número* da opção`;
-                        await this.sendKeepingUnread(() => this.client.sendText(chatId, menuMsg), chatId, menuMsg);
-                    } catch (e) {}
-                }, 1000);
-            } catch (e) {
-                console.error('Erro ao enviar mensagem de reativação:', e);
-            }
-        }
+        // Mensagem automática removida - reativação silenciosa
     }
 
     /**
@@ -3008,7 +2982,7 @@ Digite o *número* da opção`;
                 // Se atendente não enviou mensagem há mais de 15 minutos, reativa bot
                 if (timeSinceLastAttendantMsg > maxAge) {
                     console.log(`🤖 Atendimento humano abandonado há ${Math.floor(timeSinceLastAttendantMsg / 60000)} minutos - bot reativado automaticamente para ${chatId}`);
-                    this.reactivateBotForChat(chatId, true); // Envia mensagem ao cliente
+                    this.reactivateBotForChat(chatId, false); // Reativação silenciosa
                 }
             }
         } catch (e) {
