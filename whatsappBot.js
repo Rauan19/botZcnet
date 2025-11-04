@@ -2781,15 +2781,7 @@ Copie o código COMPLETO, do início ao fim!`;
         
         console.log(`⏸️ Bot pausado para chat ${chatId} pelo atendente.`);
         
-        // Envia mensagem ao cliente apenas se não estava pausado antes
-        if (!wasPaused && sendMessage && this.client) {
-            try {
-                const message = `👤 *Agora você está sendo atendido por um atendente humano.*\n\nPode falar normalmente! 😊`;
-                await this.sendKeepingUnread(() => this.client.sendText(chatId, message), chatId, message);
-            } catch (e) {
-                console.error('Erro ao enviar mensagem de atendimento humano:', e);
-            }
-        }
+        // Mensagem automática removida - atendente assume sem aviso ao cliente
     }
 
     isBotPausedForChat(chatId) {
