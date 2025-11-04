@@ -234,6 +234,45 @@
       box-shadow: 0 2px 4px rgba(239, 68, 68, 0.3);
     }
     
+    .bot-status-badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+      padding: 2px 6px;
+      border-radius: 8px;
+      font-size: 10px;
+      font-weight: 600;
+      margin-left: 6px;
+      white-space: nowrap;
+    }
+    
+    .bot-status-badge.active {
+      background: rgba(34, 197, 94, 0.15);
+      color: #22c55e;
+      border: 1px solid rgba(34, 197, 94, 0.3);
+    }
+    
+    .bot-status-badge.paused {
+      background: rgba(239, 68, 68, 0.15);
+      color: #ef4444;
+      border: 1px solid rgba(239, 68, 68, 0.3);
+    }
+    
+    .bot-status-badge .dot {
+      width: 6px;
+      height: 6px;
+      border-radius: 50%;
+      display: inline-block;
+    }
+    
+    .bot-status-badge.active .dot {
+      background: #22c55e;
+    }
+    
+    .bot-status-badge.paused .dot {
+      background: #ef4444;
+    }
+    
     /* Chat Area */
     .chat-header {
       padding: 20px;
@@ -1070,7 +1109,12 @@
             <div style="position:absolute;inset:0;display:none;align-items:center;justify-content:center;">${initials}</div>
           </div>
           <div class="chat-info">
-            <div class="chat-name">${escapeHtml(chat.name || chat.id)}</div>
+            <div class="chat-name">
+              ${escapeHtml(chat.name || chat.id)}
+              ${chat.botPaused 
+                ? '<span class="bot-status-badge paused"><span class="dot"></span>Atendimento</span>' 
+                : '<span class="bot-status-badge active"><span class="dot"></span>Bot</span>'}
+            </div>
             <div class="chat-preview">${escapeHtml(preview)}</div>
           </div>
           <div class="chat-meta">
@@ -1093,8 +1137,8 @@
         const newChats = data.chats || [];
         
         // Só atualiza se houver mudanças ou se não for silencioso
-        const hasChanges = JSON.stringify(newChats.map(c => ({id: c.id, unread: c.unreadCount}))) !== 
-                           JSON.stringify(allChats.map(c => ({id: c.id, unread: c.unreadCount})));
+        const hasChanges = JSON.stringify(newChats.map(c => ({id: c.id, unread: c.unreadCount, botPaused: c.botPaused}))) !== 
+                           JSON.stringify(allChats.map(c => ({id: c.id, unread: c.unreadCount, botPaused: c.botPaused})));
         
         allChats = newChats;
         filteredChats = allChats;
@@ -1388,17 +1432,26 @@
                       <div class="audio-duration">--:--</div>
                     </div>`;
                 } else if (isPdf) {
+                  // Limpa o texto se contiver base64 ou dados de arquivo
+                  const cleanText = cleanTextForFile(msg.text || '');
                   contentHtml = `
                     <div class="pdf-viewer">
-                      <iframe src="/api/files/${encodeURIComponent(msg.fileId)}" type="application/pdf" 
-                              style="width: 100%; height: 400px; border: none; border-radius: 8px; background: #1e293b;">
+                      <iframe src="/api/files/${encodeURIComponent(msg.fileId)}#toolbar=1" 
+                              type="application/pdf" 
+                              style="width: 100%; height: 400px; border: none; border-radius: 8px; background: #1e293b;"
+                              title="Visualizador de PDF">
                       </iframe>
-                      <div style="margin-top: 8px;">
+                      <div style="margin-top: 8px; display: flex; gap: 8px; flex-wrap: wrap;">
                         <a href="/api/files/${encodeURIComponent(msg.fileId)}" target="_blank" 
                            class="btn btn-secondary" style="text-decoration: none; display: inline-flex;">
                           📄 Abrir PDF
                         </a>
+                        <a href="/api/files/${encodeURIComponent(msg.fileId)}" download="${escapeHtml(fileName)}" 
+                           class="btn btn-secondary" style="text-decoration: none; display: inline-flex;">
+                          💾 Baixar PDF
+                        </a>
                       </div>
+                      ${cleanText && cleanText !== '[arquivo]' && cleanText.length > 3 ? `<div class="message-text" style="margin-top: 8px;">${escapeHtml(cleanText)}</div>` : ''}
                     </div>`;
                 } else if (isQrCode || isImage) {
                   const cleanText = cleanTextForFile(msg.text || '');
@@ -1542,17 +1595,26 @@
             } else if (isPdf) {
               // Renderiza PDF com visualizador embutido - SEM mostrar texto quando há PDF
               // O PDF já é auto-explicativo, não precisa mostrar texto adicional
+              // Limpa o texto se contiver base64 ou dados de arquivo
+              const cleanText = cleanTextForFile(msg.text || '');
               contentHtml = `
                 <div class="pdf-viewer">
-                  <iframe src="/api/files/${encodeURIComponent(msg.fileId)}" type="application/pdf" 
-                          style="width: 100%; height: 400px; border: none; border-radius: 8px; background: #1e293b;">
+                  <iframe src="/api/files/${encodeURIComponent(msg.fileId)}#toolbar=1" 
+                          type="application/pdf" 
+                          style="width: 100%; height: 400px; border: none; border-radius: 8px; background: #1e293b;"
+                          title="Visualizador de PDF">
                   </iframe>
-                  <div style="margin-top: 8px;">
+                  <div style="margin-top: 8px; display: flex; gap: 8px; flex-wrap: wrap;">
                     <a href="/api/files/${encodeURIComponent(msg.fileId)}" target="_blank" 
                        class="btn btn-secondary" style="text-decoration: none; display: inline-flex;">
                       📄 Abrir PDF
                     </a>
+                    <a href="/api/files/${encodeURIComponent(msg.fileId)}" download="${escapeHtml(fileName)}" 
+                       class="btn btn-secondary" style="text-decoration: none; display: inline-flex;">
+                      💾 Baixar PDF
+                    </a>
                   </div>
+                  ${cleanText && cleanText !== '[arquivo]' && cleanText.length > 3 ? `<div class="message-text" style="margin-top: 8px;">${escapeHtml(cleanText)}</div>` : ''}
                 </div>`;
             } else if (isQrCode || isImage) {
               // Renderiza QR code/imagem como imagem

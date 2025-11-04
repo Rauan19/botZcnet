@@ -53,6 +53,22 @@ try {
     try { db.exec(`ALTER TABLE messages ADD COLUMN file_name TEXT;`); } catch (_) {}
     try { db.exec(`ALTER TABLE messages ADD COLUMN file_type TEXT;`); } catch (_) {}
     
+    // Adiciona coluna bot_paused se não existir
+    try {
+        db.exec(`ALTER TABLE chats ADD COLUMN bot_paused INTEGER NOT NULL DEFAULT 0;`);
+        console.log('✅ Coluna bot_paused adicionada');
+    } catch (e) {
+        // Coluna já existe
+    }
+    
+    // Adiciona coluna last_attendant_message_at se não existir
+    try {
+        db.exec(`ALTER TABLE chats ADD COLUMN last_attendant_message_at INTEGER;`);
+        console.log('✅ Coluna last_attendant_message_at adicionada');
+    } catch (e) {
+        // Coluna já existe
+    }
+    
     console.log('✅ Banco de dados SQLite inicializado com sucesso');
 } catch (error) {
     console.error('❌ Erro ao inicializar banco de dados:', error);
@@ -102,7 +118,7 @@ class DatabaseStore {
         return { id: messageId, direction: 'in', sender, text, timestamp };
     }
 
-    recordOutgoingMessage({ chatId, text, timestamp, audioId, fileId, fileName, fileType }) {
+    recordOutgoingMessage({ chatId, text, timestamp, audioId, fileId, fileName, fileType, isAttendant = false }) {
         const messageId = `${chatId}:out:${timestamp}`;
         
         // Dedupe de salvamento: evita salvar saídas idênticas muito recentes
@@ -122,14 +138,25 @@ class DatabaseStore {
         `);
         msgStmt.run(messageId, chatId, text || '', timestamp, audioId || null, fileId || null, fileName || null, fileType || null);
         
-        // Atualiza última mensagem (sem incrementar unread_count)
-        const updateStmt = db.prepare(`
-            UPDATE chats 
-            SET last_message_at = datetime(?, 'unixepoch'),
-                updated_at = datetime('now')
-            WHERE id = ?
-        `);
-        updateStmt.run(timestamp / 1000, chatId);
+        // Atualiza última mensagem e marca como mensagem do atendente apenas se for do atendente
+        if (isAttendant) {
+            const updateStmt = db.prepare(`
+                UPDATE chats 
+                SET last_message_at = datetime(?, 'unixepoch'),
+                    last_attendant_message_at = ?,
+                    updated_at = datetime('now')
+                WHERE id = ?
+            `);
+            updateStmt.run(timestamp / 1000, timestamp, chatId);
+        } else {
+            const updateStmt = db.prepare(`
+                UPDATE chats 
+                SET last_message_at = datetime(?, 'unixepoch'),
+                    updated_at = datetime('now')
+                WHERE id = ?
+            `);
+            updateStmt.run(timestamp / 1000, chatId);
+        }
         
         return { id: messageId, direction: 'out', sender: 'bot', text, timestamp };
     }
@@ -142,6 +169,84 @@ class DatabaseStore {
         `);
         stmt.run(chatId);
         return true;
+    }
+
+    /**
+     * Define se o bot está pausado para um chat específico
+     */
+    setBotPaused(chatId, paused) {
+        try {
+            const stmt = db.prepare(`
+                UPDATE chats 
+                SET bot_paused = ?, updated_at = datetime('now')
+                WHERE id = ?
+            `);
+            stmt.run(paused ? 1 : 0, chatId);
+            return true;
+        } catch (e) {
+            console.error('Erro ao definir estado de pausa do bot:', e);
+            return false;
+        }
+    }
+
+    /**
+     * Verifica se o bot está pausado para um chat específico
+     */
+    isBotPaused(chatId) {
+        try {
+            const stmt = db.prepare('SELECT bot_paused FROM chats WHERE id = ?');
+            const row = stmt.get(chatId);
+            return row ? (row.bot_paused === 1) : false;
+        } catch (e) {
+            console.error('Erro ao verificar estado de pausa do bot:', e);
+            return false;
+        }
+    }
+
+    /**
+     * Atualiza timestamp da última mensagem do atendente
+     */
+    updateLastAttendantMessage(chatId, timestamp) {
+        try {
+            const stmt = db.prepare(`
+                UPDATE chats 
+                SET last_attendant_message_at = ?, updated_at = datetime('now')
+                WHERE id = ?
+            `);
+            stmt.run(timestamp, chatId);
+            return true;
+        } catch (e) {
+            console.error('Erro ao atualizar última mensagem do atendente:', e);
+            return false;
+        }
+    }
+
+    /**
+     * Obtém timestamp da última mensagem do atendente
+     */
+    getLastAttendantMessage(chatId) {
+        try {
+            const stmt = db.prepare('SELECT last_attendant_message_at FROM chats WHERE id = ?');
+            const row = stmt.get(chatId);
+            return row ? (row.last_attendant_message_at || null) : null;
+        } catch (e) {
+            console.error('Erro ao obter última mensagem do atendente:', e);
+            return null;
+        }
+    }
+
+    /**
+     * Carrega todos os chats com bot pausado (para restaurar estado na inicialização)
+     */
+    getPausedChats() {
+        try {
+            const stmt = db.prepare('SELECT id FROM chats WHERE bot_paused = 1');
+            const rows = stmt.all();
+            return rows.map(row => row.id);
+        } catch (e) {
+            console.error('Erro ao obter chats pausados:', e);
+            return [];
+        }
     }
 
     listChats() {
@@ -167,6 +272,7 @@ class DatabaseStore {
                 id: row.id,
                 name: row.name || '',
                 unreadCount: row.unread_count || 0,
+                botPaused: row.bot_paused === 1,
                 lastMessage: row.last_message_content ? {
                     text: row.last_message_content,
                     timestamp: row.last_message_timestamp
@@ -208,6 +314,8 @@ class DatabaseStore {
                 id: chat.id,
                 name: chat.name || '',
                 unreadCount: chat.unread_count || 0,
+                botPaused: chat.bot_paused === 1,
+                lastAttendantMessageAt: chat.last_attendant_message_at || null,
                 lastMessage: messages.length > 0 ? messages[messages.length - 1] : null,
                 updatedAt: chat.updated_at,
                 messages

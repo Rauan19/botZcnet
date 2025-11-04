@@ -21,6 +21,7 @@ if (ffmpegStatic) {
 class App {
     constructor() {
         this.bot = new WhatsAppBot();
+        this.setupDirectories(); // Cria diretórios necessários
         this.setupGracefulShutdown();
         this.setupCleanup();
         // Heartbeat para manter o event loop ativo e ajudar diagnósticos
@@ -58,6 +59,29 @@ class App {
 
         process.on('SIGINT', () => shutdown('SIGINT'));
         process.on('SIGTERM', () => shutdown('SIGTERM'));
+    }
+
+    /**
+     * Cria diretórios necessários na inicialização
+     */
+    setupDirectories() {
+        const directories = [
+            path.join(__dirname, 'audios'),
+            path.join(__dirname, 'files'),
+            path.join(__dirname, 'temp_audio'),
+            path.join(__dirname, 'avatars')
+        ];
+        
+        directories.forEach(dir => {
+            try {
+                if (!fs.existsSync(dir)) {
+                    fs.mkdirSync(dir, { recursive: true });
+                    console.log(`✅ Diretório criado: ${dir}`);
+                }
+            } catch (e) {
+                console.error(`❌ Erro ao criar diretório ${dir}:`, e);
+            }
+        });
     }
 
     /**
@@ -103,6 +127,21 @@ class App {
                     const id = req.params.id;
                     const filePath = path.join(filesDir, id);
                     if (!fs.existsSync(filePath)) return res.status(404).json({ error: 'not_found' });
+                    
+                    // Detecta tipo de arquivo pela extensão
+                    const ext = path.extname(filePath).toLowerCase();
+                    let contentType = 'application/octet-stream';
+                    
+                    if (ext === '.pdf') {
+                        contentType = 'application/pdf';
+                        // Permite visualização inline no navegador
+                        res.setHeader('Content-Type', contentType);
+                        res.setHeader('Content-Disposition', `inline; filename="${path.basename(filePath)}"`);
+                    } else if (ext === '.png' || ext === '.jpg' || ext === '.jpeg' || ext === '.gif') {
+                        contentType = `image/${ext.slice(1)}`;
+                        res.setHeader('Content-Type', contentType);
+                    }
+                    
                     res.sendFile(filePath);
                 } catch (e) {
                     res.status(500).json({ error: 'internal_error' });
@@ -192,10 +231,14 @@ class App {
                     if (isPaused) {
                         // Reativa o bot
                         this.bot.reactivateBotForChat(chatId);
+                        // Salva no banco
+                        messageStore.setBotPaused(chatId, false);
                         res.json({ ok: true, paused: false, message: 'Bot reativado' });
                     } else {
                         // Pausa o bot
                         this.bot.pauseBotForChat(chatId);
+                        // Salva no banco
+                        messageStore.setBotPaused(chatId, true);
                         res.json({ ok: true, paused: true, message: 'Bot pausado' });
                     }
                 } catch (e) {
@@ -206,7 +249,10 @@ class App {
             // API: finalizar atendimento (reativa bot) - mantido para compatibilidade
             app.post('/api/chats/:id/end-attendant', (req, res) => {
                 try {
-                    this.bot.reactivateBotForChat(req.params.id);
+                    const chatId = req.params.id;
+                    this.bot.reactivateBotForChat(chatId);
+                    // Salva no banco
+                    messageStore.setBotPaused(chatId, false);
                     res.json({ ok: true });
                 } catch (e) {
                     res.status(500).json({ error: 'internal_error' });
@@ -223,9 +269,36 @@ class App {
                         return res.status(400).json({ error: 'Mensagem não pode estar vazia' });
                     }
 
+                    // IMPORTANTE: Marca bot como pausado quando atendente envia pelo painel
+                    // Isso evita que bot responda enquanto atendente está conversando
+                    const wasPaused = this.bot.isBotPausedForChat(chatId);
+                    if (!wasPaused) {
+                        // Pausa bot para este chat
+                        this.bot.pauseBotForChat(chatId);
+                        // Salva no banco
+                        messageStore.setBotPaused(chatId, true);
+                        console.log(`⏸️ Bot pausado automaticamente para ${chatId} (atendente enviou mensagem)`);
+                    }
+                    
+                    // Atualiza timestamp da última mensagem do atendente
+                    const timestamp = Date.now();
+                    messageStore.updateLastAttendantMessage(chatId, timestamp);
+
                     // Envia mensagem pelo bot
                     // O sendMessage agora salva no banco ANTES de enviar
                     const result = await this.bot.sendMessage(chatId, text.trim());
+                    
+                    // Salva mensagem como do atendente
+                    try {
+                        messageStore.recordOutgoingMessage({
+                            chatId: chatId,
+                            text: text.trim(),
+                            timestamp: timestamp,
+                            isAttendant: true
+                        });
+                    } catch (saveError) {
+                        // Ignora erro ao salvar
+                    }
 
                     // Retorna sucesso mesmo se o envio falhar (mensagem já está salva no banco)
                     res.json({ ok: true, messageId: result?.id || null, saved: true });
@@ -236,7 +309,8 @@ class App {
                         messageStore.recordOutgoingMessage({
                             chatId: chatId,
                             text: text.trim(),
-                            timestamp: Date.now()
+                            timestamp: Date.now(),
+                            isAttendant: true
                         });
                     } catch (saveError) {
                         // Ignora erro ao salvar
@@ -250,18 +324,36 @@ class App {
                 try {
                     const { audioId } = req.params;
                     
+                    // Garante que o diretório existe
+                    const audioDir = path.join(__dirname, 'audios');
+                    if (!fs.existsSync(audioDir)) {
+                        fs.mkdirSync(audioDir, { recursive: true });
+                    }
+                    
                     // Busca o arquivo salvo
-                    const audioPath = path.join(__dirname, 'audios', `${audioId}.ogg`);
+                    const audioPath = path.join(audioDir, `${audioId}.ogg`);
+                    
+                    console.log(`🔍 Buscando áudio: ${audioPath}`);
                     
                     if (!fs.existsSync(audioPath)) {
-                        return res.status(404).json({ error: 'Áudio não encontrado' });
+                        console.error(`❌ Áudio não encontrado: ${audioPath}`);
+                        return res.status(404).json({ error: 'Áudio não encontrado', audioId, path: audioPath });
+                    }
+                    
+                    // Verifica se é arquivo válido
+                    const stats = fs.statSync(audioPath);
+                    if (stats.size === 0) {
+                        console.error(`❌ Áudio vazio: ${audioPath}`);
+                        return res.status(404).json({ error: 'Áudio vazio' });
                     }
                     
                     res.setHeader('Content-Type', 'audio/ogg; codecs=opus');
+                    res.setHeader('Content-Length', stats.size);
+                    res.setHeader('Cache-Control', 'public, max-age=3600');
                     res.sendFile(audioPath);
                 } catch (e) {
                     console.error('❌ Erro ao baixar áudio:', e);
-                    res.status(500).json({ error: e.message || 'Erro ao baixar áudio' });
+                    res.status(500).json({ error: e.message || 'Erro ao baixar áudio', details: e.toString() });
                 }
             });
 
@@ -274,6 +366,18 @@ class App {
                     if (!file) {
                         return res.status(400).json({ error: 'Nenhum arquivo enviado' });
                     }
+
+                    // IMPORTANTE: Marca bot como pausado quando atendente envia áudio pelo painel
+                    const wasPaused = this.bot.isBotPausedForChat(chatId);
+                    if (!wasPaused) {
+                        this.bot.pauseBotForChat(chatId);
+                        messageStore.setBotPaused(chatId, true);
+                        console.log(`⏸️ Bot pausado automaticamente para ${chatId} (atendente enviou áudio)`);
+                    }
+                    
+                    // Atualiza timestamp da última mensagem do atendente
+                    const timestamp = Date.now();
+                    messageStore.updateLastAttendantMessage(chatId, timestamp);
 
                     // Converte WebM para OGG Opus (formato aceito pelo WhatsApp)
                     const outputPath = file.path + '.ogg';
@@ -311,12 +415,13 @@ class App {
                     const audioPath = path.join(audioDir, `${audioId}.ogg`);
                     fs.writeFileSync(audioPath, audioData);
                     
-                    // Registra mensagem enviada com o ID do áudio
+                    // Registra mensagem enviada com o ID do áudio (como do atendente)
                     messageStore.recordOutgoingMessage({
                         chatId: chatId,
                         text: '[áudio]',
-                        timestamp: Date.now(),
-                        audioId: audioId
+                        timestamp: timestamp,
+                        audioId: audioId,
+                        isAttendant: true
                     });
                     
                     // Remove arquivo temporário

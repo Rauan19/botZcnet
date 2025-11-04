@@ -147,6 +147,9 @@ class WhatsAppBot {
         });
 
         this.setupListeners();
+        
+        // Carrega estado de pausa do banco de dados (persistência após reinício)
+        this.loadPausedChatsFromDatabase();
 
         this.started = true;
         console.log('✅ Bot WhatsApp conectado com sucesso (wppconnect)!');
@@ -172,6 +175,29 @@ class WhatsAppBot {
         const contentType = m[1] || 'image/png';
         const buf = Buffer.from(m[2], 'base64');
         return { contentType, buffer: buf };
+    }
+
+    /**
+     * Carrega estado de pausa do banco de dados na inicialização
+     */
+    loadPausedChatsFromDatabase() {
+        try {
+            const pausedChats = messageStore.getPausedChats();
+            pausedChats.forEach(chatId => {
+                this.humanAttending.set(chatId, true);
+                // Recupera timestamp da última mensagem do atendente se disponível
+                const chatData = messageStore.getChat(chatId);
+                if (chatData && chatData.lastAttendantMessageAt) {
+                    this.humanAttendingTime.set(chatId, chatData.lastAttendantMessageAt);
+                } else {
+                    // Se não tem timestamp, usa timestamp atual menos 10 minutos (para evitar timeout imediato)
+                    this.humanAttendingTime.set(chatId, Date.now() - (10 * 60 * 1000));
+                }
+            });
+            console.log(`✅ Carregados ${pausedChats.length} chats com bot pausado do banco de dados`);
+        } catch (e) {
+            console.error('❌ Erro ao carregar chats pausados do banco:', e);
+        }
     }
 
     /**
@@ -284,13 +310,13 @@ class WhatsAppBot {
                     
                     if (isAttendantIdentification) {
                         // Atendente se identificou - desativa bot IMEDIATAMENTE para este chat
-                        this.humanAttending.set(targetChatId, true);
+                        await this.pauseBotForChat(targetChatId, false); // Não envia mensagem, já está conversando
                         console.log(`👤 Atendente humano identificado para chat ${targetChatId}. Bot PAUSADO imediatamente para esta conversa.`);
                     }
                     
                     // Verifica se atendente quer reativar o bot (comando secreto)
                     if (bodyLower.includes('#reativar') || bodyLower.includes('#boton') || bodyLower.includes('#bot on')) {
-                        this.humanAttending.set(targetChatId, false);
+                        await this.reactivateBotForChat(targetChatId, false); // Não envia mensagem, é comando secreto
                         console.log(`🤖 Bot reativado para chat ${targetChatId}.`);
                     }
                     
@@ -305,11 +331,52 @@ class WhatsAppBot {
                 const isAudio = message.mimetype && message.mimetype.includes('audio');
                 let clientSentAudio = false; // Flag para saber se cliente enviou áudio
                 
+                // Detecta se é PDF/documento recebido
+                const isPdf = (message.mimetype && message.mimetype.includes('pdf')) || 
+                             (message.type === 'document' && message.mimetype && message.mimetype.includes('pdf')) ||
+                             (message.type === 'document' && message.fileName && message.fileName.toLowerCase().endsWith('.pdf'));
+                
                 if (isAudio && !message.fromMe) {
                     clientSentAudio = true; // Cliente enviou áudio
-                    // Cliente enviou áudio - transcreve para texto
+                    // Cliente enviou áudio - transcreve para texto e salva arquivo
                     console.log('🎤 Áudio recebido, transcrevendo...');
                     try {
+                        const audioId = message.id || `audio_${Date.now()}`;
+                        
+                        // Faz download do áudio para salvar permanentemente
+                        let audioSaved = false;
+                        try {
+                            const messageId = message.id || message._serialized || message.timestamp;
+                            let media = await client.downloadMedia(messageId);
+                            
+                            if (!media && message.mediaData) {
+                                media = message.mediaData;
+                            }
+                            
+                            if (media) {
+                                // Salva áudio permanentemente no diretório audios
+                                const audioDir = path.join(__dirname, 'audios');
+                                if (!fs.existsSync(audioDir)) fs.mkdirSync(audioDir, { recursive: true });
+                                
+                                let audioData = media.data || media;
+                                let mimetype = media.mimetype || message.mimetype || 'audio/ogg';
+                                
+                                // Remove prefixo data URL se existir
+                                if (typeof audioData === 'string' && audioData.includes(',')) {
+                                    audioData = audioData.split(',')[1];
+                                }
+                                
+                                // Converte para OGG se necessário (para compatibilidade)
+                                const audioPath = path.join(audioDir, `${audioId}.ogg`);
+                                fs.writeFileSync(audioPath, Buffer.from(audioData, 'base64'));
+                                audioSaved = true;
+                                console.log(`✅ Áudio salvo: ${audioPath}`);
+                            }
+                        } catch (e) {
+                            console.warn('⚠️ Erro ao salvar áudio:', e.message);
+                        }
+                        
+                        // Transcreve áudio
                         const transcript = await audioTranscription.processWhatsAppAudio(message, client);
                         if (transcript && transcript.trim()) {
                             finalBody = transcript;
@@ -317,14 +384,13 @@ class WhatsAppBot {
                             
                             // Salva transcrição como mensagem de áudio no banco
                             try {
-                                const audioId = message.id || `audio_${Date.now()}`;
                                 messageStore.recordIncomingMessage({ 
                                     chatId: message.from, 
                                     sender: message.from, 
                                     text: '[áudio]', 
                                     timestamp: Date.now(), 
                                     name: message.sender?.pushname || '',
-                                    audioId 
+                                    audioId: audioSaved ? audioId : null
                                 });
                                 
                                 // Salva transcrição como mensagem separada
@@ -339,16 +405,124 @@ class WhatsAppBot {
                         } else {
                             console.log('⚠️ Transcrição não disponível, processando áudio normalmente');
                             finalBody = '[áudio]';
+                            
+                            // Mesmo sem transcrição, salva mensagem de áudio se foi salvo
+                            if (audioSaved) {
+                                try {
+                                    messageStore.recordIncomingMessage({ 
+                                        chatId: message.from, 
+                                        sender: message.from, 
+                                        text: '[áudio]', 
+                                        timestamp: Date.now(), 
+                                        name: message.sender?.pushname || '',
+                                        audioId 
+                                    });
+                                } catch (_) {}
+                            }
                         }
                     } catch (e) {
-                        console.error('❌ Erro ao transcrever áudio:', e);
+                        console.error('❌ Erro ao processar áudio:', e);
                         finalBody = '[áudio]';
+                        
+                        // Tenta salvar mensagem de áudio mesmo com erro
+                        try {
+                            const audioId = message.id || `audio_${Date.now()}`;
+                            messageStore.recordIncomingMessage({ 
+                                chatId: message.from, 
+                                sender: message.from, 
+                                text: '[áudio]', 
+                                timestamp: Date.now(), 
+                                name: message.sender?.pushname || '',
+                                audioId: null // Não salvo devido ao erro
+                            });
+                        } catch (_) {}
+                    }
+                }
+                
+                // Processa PDF recebido
+                if (isPdf && !message.fromMe) {
+                    console.log('📄 PDF recebido do cliente');
+                    try {
+                        // Tenta fazer download do PDF
+                        const messageId = message.id || message._serialized || message.timestamp;
+                        let media = null;
+                        
+                        try {
+                            media = await client.downloadMedia(messageId);
+                        } catch (e) {
+                            console.warn('⚠️ Erro ao fazer download do PDF:', e.message);
+                            // Tenta usar dados da mensagem se disponíveis
+                            if (message.mediaData) {
+                                media = message.mediaData;
+                            }
+                        }
+                        
+                        if (media) {
+                            // Salva PDF no diretório files
+                            const filesDir = path.join(__dirname, 'files');
+                            if (!fs.existsSync(filesDir)) fs.mkdirSync(filesDir, { recursive: true });
+                            
+                            let pdfData = media.data || media;
+                            let mimetype = media.mimetype || message.mimetype || 'application/pdf';
+                            
+                            // Remove prefixo data URL se existir
+                            if (typeof pdfData === 'string' && pdfData.includes(',')) {
+                                pdfData = pdfData.split(',')[1];
+                            }
+                            
+                            const fileId = `comprovante_${Date.now()}_${Math.random().toString(36).slice(2)}.pdf`;
+                            const destPath = path.join(filesDir, fileId);
+                            fs.writeFileSync(destPath, Buffer.from(pdfData, 'base64'));
+                            
+                            const fileName = message.fileName || message.name || 'comprovante.pdf';
+                            
+                            // Limpa o texto se contiver base64 ou dados de arquivo
+                            let cleanText = finalBody || '';
+                            if (cleanText) {
+                                // Remove base64 se existir no texto
+                                cleanText = cleanText.replace(/data:[^;]+;base64,[A-Za-z0-9+\/=]+/g, '');
+                                cleanText = cleanText.replace(/[A-Za-z0-9+\/=]{100,}/g, ''); // Remove strings base64 longas
+                                cleanText = cleanText.trim();
+                            }
+                            
+                            // Se sobrou apenas base64 ou muito pouco texto, usa placeholder
+                            if (!cleanText || cleanText.length < 3 || cleanText === '[arquivo]') {
+                                cleanText = '[arquivo]';
+                            }
+                            
+                            // Salva PDF no banco de dados
+                            try {
+                                messageStore.recordIncomingMessage({ 
+                                    chatId: message.from, 
+                                    sender: message.from, 
+                                    text: cleanText, 
+                                    timestamp: Date.now(), 
+                                    name: message.sender?.pushname || '',
+                                    fileId: fileId,
+                                    fileName: fileName,
+                                    fileType: mimetype
+                                });
+                            } catch (e) {
+                                console.error('❌ Erro ao salvar PDF no banco:', e);
+                            }
+                            
+                            // Se o cliente enviou apenas PDF sem texto legível, trata como comprovante
+                            if (!cleanText || cleanText.trim() === '' || cleanText === '[arquivo]') {
+                                console.log('📸 Cliente enviou apenas PDF (comprovante) - pausando bot');
+                                // Pausa bot para atendimento humano processar comprovante
+                                await this.pauseBotForChat(message.from, false); // Não envia mensagem, PDF é auto-explicativo
+                                // Não responde nada - deixa atendente humano processar
+                                return;
+                            }
+                        }
+                    } catch (e) {
+                        console.error('❌ Erro ao processar PDF:', e);
                     }
                 }
                 
                 console.log(`📩 Mensagem recebida de ${message.from}: ${finalBody || '[sem texto]'}`);
-                // Registrar no painel (incrementa não lidas) - só se não for áudio (já registrado acima)
-                if (!isAudio || finalBody === '[áudio]') {
+                // Registrar no painel (incrementa não lidas) - só se não for áudio (já registrado acima) e não for PDF (já registrado acima)
+                if ((!isAudio || finalBody === '[áudio]') && !isPdf) {
                     try { messageStore.recordIncomingMessage({ chatId: message.from, sender: message.from, text: finalBody, timestamp: Date.now(), name: message.sender?.pushname || '' }); } catch (_) {}
                 }
                 
@@ -358,7 +532,7 @@ class WhatsAppBot {
                 const hasAttendantKeyword = finalBodyLower.includes('atendente') || finalBodyLower.includes('atendende');
                 if (hasAttendantKeyword) {
                     // Cliente mencionou atendente - pausa bot para este chat
-                    this.humanAttending.set(message.from, true);
+                    await this.pauseBotForChat(message.from, true); // Envia mensagem avisando cliente
                     console.log(`👤 Cliente mencionou atendente - bot pausado: "${finalBody.substring(0, 50)}..."`);
                     return; // Para IMEDIATAMENTE, não processa mais nada
                 }
@@ -369,8 +543,13 @@ class WhatsAppBot {
                 return;
             }
 
-                // Detecta CPF/documento (11+ dígitos)
-                const doc = this.extractDocument(body);
+                // Detecta CPF/documento (11+ dígitos) - APENAS SE HÁ TEXTO E NÃO É PDF
+                // Se cliente enviou apenas PDF, já foi tratado acima e o bot foi pausado
+                let doc = null;
+                if (!isPdf && finalBody && finalBody.trim() && finalBody !== '[arquivo]') {
+                    doc = this.extractDocument(finalBody);
+                }
+                
                 if (doc) {
                     const currentContext = this.getConversationContext(message.from);
                     
@@ -702,7 +881,7 @@ Digite o *número* da opção`;
                             try { messageStore.recordOutgoingMessage({ chatId: message.from, text: '[arquivo] boleto.pdf - ' + caption, timestamp: Date.now() }); } catch (_) {}
                         }
                         
-                        this.humanAttending.set(message.from, true);
+                        await this.pauseBotForChat(message.from, false); // Não envia mensagem, já enviou boleto
                         console.log(`⏸️ Bot pausado para chat ${message.from} após enviar boleto.`);
                         return;
                     } catch (e) {
@@ -745,8 +924,7 @@ Digite o *número* da opção`;
                 
                 // Reativa o bot se estiver pausado
                 if (this.humanAttending.get(message.from) === true) {
-                    this.humanAttending.set(message.from, false);
-                    this.humanAttendingTime.delete(message.from);
+                    await this.reactivateBotForChat(message.from, false); // Não envia mensagem, já vai mostrar menu
                     console.log(`🤖 Bot reativado pelo comando menu`);
                 }
                 
@@ -884,9 +1062,6 @@ Digite o *número* da opção
             
             if (textLower.trim() === '3' && isMainMenu) {
                 console.log(`👤 Cliente selecionou opção 3 - Atendimento humano`);
-                // Pausa o bot para este chat - atendimento humano ativo
-                this.humanAttending.set(message.from, true);
-                this.humanAttendingTime.set(message.from, Date.now());
                 // Atualiza contexto: atendimento humano ativo
                 this.updateConversationContext(message.from, {
                     currentMenu: 'main',
@@ -896,6 +1071,8 @@ Digite o *número* da opção
                 });
                 const response = `*Estamos preparando seu atendimento, logo um atendente irá te atender.*`;
                 await this.sendKeepingUnread(() => client.sendText(message.from, response), message.from, response);
+                // Pausa o bot para este chat - atendimento humano ativo (não envia mensagem adicional, já enviou acima)
+                await this.pauseBotForChat(message.from, false);
                 console.log(`⏸️ Bot pausado para chat ${message.from} - aguardando atendimento humano. Reativação apenas manual pelo painel.`);
                 return;
             }
@@ -1017,6 +1194,28 @@ Digite sua dúvida que vamos te orientar.
                 }
             }
             
+            // VERIFICAÇÃO CRÍTICA: Verifica se atendente enviou mensagem recente antes de responder
+            // Isso evita que bot responda enquanto atendente está conversando
+            const lastAttendantMsg = messageStore.getLastAttendantMessage(message.from);
+            const now = Date.now();
+            const timeSinceLastAttendantMsg = lastAttendantMsg ? (now - lastAttendantMsg) : Infinity;
+            
+            // Se atendente enviou mensagem nos últimos 10 segundos, não responde
+            if (lastAttendantMsg && timeSinceLastAttendantMsg < 10000) {
+                console.log(`⏸️ Atendente enviou mensagem há ${Math.floor(timeSinceLastAttendantMsg / 1000)}s - bot não responde para evitar conflito`);
+                // Registra mensagem do cliente mas NÃO responde
+                try {
+                    messageStore.recordIncomingMessage({ 
+                        chatId: message.from, 
+                        sender: message.from, 
+                        text: text, 
+                        timestamp: Date.now(), 
+                        name: message.sender?.pushname || '' 
+                    }); 
+                } catch (_) {}
+                return; // Não responde - atendente acabou de enviar mensagem
+            }
+            
             // VERIFICAÇÃO: Se atendimento humano está ativo, verifica se cliente quer reativar
             // EXCEÇÃO: solicitações de pagamento SEMPRE reativam o bot
             const isPaymentRequest = intent === 'request_payment';
@@ -1030,8 +1229,7 @@ Digite sua dúvida que vamos te orientar.
                     } else {
                         console.log(`🤖 Cliente solicitou pagamento - reativando bot para atendimento automático.`);
                     }
-                    this.humanAttending.set(message.from, false);
-                    this.humanAttendingTime.delete(message.from);
+                    await this.reactivateBotForChat(message.from, false); // Não envia mensagem, já vai processar pagamento
                     // Continua o fluxo normalmente abaixo para processar solicitação
                 } else {
                     // Não é solicitação de pagamento - ignora
@@ -1050,11 +1248,28 @@ Digite sua dúvida que vamos te orientar.
                 }
             }
             
+            // DELAY MÍNIMO antes de responder (evita responder enquanto atendente está digitando)
+            // Aguarda 2-3 segundos antes de processar e responder
+            await new Promise(resolve => setTimeout(resolve, 2000 + Math.random() * 1000));
+            
+            // Verifica novamente se atendente enviou mensagem durante o delay
+            const lastAttendantMsgAfterDelay = messageStore.getLastAttendantMessage(message.from);
+            if (lastAttendantMsgAfterDelay && lastAttendantMsgAfterDelay !== lastAttendantMsg) {
+                console.log(`⏸️ Atendente enviou mensagem durante delay - bot não responde`);
+                return; // Atendente enviou mensagem durante delay, não responde
+            }
+            
+            // Verifica novamente se bot foi pausado durante o delay
+            if (this.humanAttending.get(message.from) === true) {
+                console.log(`⏸️ Bot foi pausado durante delay - não responde`);
+                return;
+            }
+            
             // 1. Confirmação de pagamento feito - NÃO responde nada, apenas pausa
             if (intent === 'confirm_payment') {
                 // Quando cliente confirma pagamento, bot NÃO responde - apenas pausa para atendente humano
                 console.log(`💬 Cliente confirmou pagamento - bot pausado sem resposta: "${text.substring(0, 50)}..."`);
-                this.humanAttending.set(message.from, true);
+                await this.pauseBotForChat(message.from, false); // Não envia mensagem, atendente vai processar
                 return; // Não responde nada
             }
             
@@ -1138,7 +1353,7 @@ Digite sua dúvida que vamos te orientar.
             if (intent === 'inform_presential') {
                 console.log(`💬 Cliente informando pagamento presencial - mensagem ignorada e bot pausado: "${text}"`);
                 // Pausa o bot para este chat - cliente vai pagar pessoalmente, não precisa de mais nada
-                this.humanAttending.set(message.from, true);
+                await this.pauseBotForChat(message.from, false); // Não envia mensagem, cliente já informou
                 // Registra mensagem do cliente mas não responde
                 try {
                     messageStore.recordIncomingMessage({ 
@@ -1212,6 +1427,10 @@ Digite sua dúvida que vamos te orientar.
                             await new Promise(resolve => setTimeout(resolve, 500));
                             await this.sendKeepingUnread(() => client.sendText(message.from, parsed.payload), message.from, parsed.payload);
                             try { messageStore.recordOutgoingMessage({ chatId: message.from, text: parsed.payload }); } catch (_) {}
+                            
+                            // Envia imagem com instruções de como copiar o código PIX corretamente
+                            await new Promise(resolve => setTimeout(resolve, 500));
+                            await this.sendPixInstructionsImage(message.from);
                         }
                         
                         if (!parsed.imageBase64 && !parsed.payload) {
@@ -1241,7 +1460,7 @@ Digite sua dúvida que vamos te orientar.
                         });
                         
                         await this.sendKeepingUnread(() => client.sendText(message.from, postPixMsg), message.from, postPixMsg);
-                        this.humanAttending.set(message.from, true);
+                        await this.pauseBotForChat(message.from, false); // Não envia mensagem, já enviou PIX
                         console.log(`⏸️ Bot pausado para chat ${message.from} após enviar PIX.`);
                         return;
                         
@@ -1302,7 +1521,7 @@ Digite sua dúvida que vamos te orientar.
                             try { messageStore.recordOutgoingMessage({ chatId: message.from, text: '[arquivo] boleto.pdf - ' + caption, timestamp: Date.now() }); } catch (_) {}
                         }
                         
-                        this.humanAttending.set(message.from, true);
+                        await this.pauseBotForChat(message.from, false); // Não envia mensagem, já enviou boleto
                         console.log(`⏸️ Bot pausado para chat ${message.from} após enviar boleto.`);
                         return;
                         
@@ -1626,7 +1845,7 @@ Obrigado por nos contactar! 🎉`;
                 // Se tem pagamento E problema, pausa bot e não responde
                 if (hasPaymentWord && hasProblem) {
                     console.log(`⚠️ Cliente reportou pagamento com problema - bot pausado: "${text.substring(0, 50)}..."`);
-                    this.humanAttending.set(message.from, true);
+                    await this.pauseBotForChat(message.from, false); // Não envia mensagem, atendente vai investigar
                     return; // Não responde nada
                 }
                 
@@ -1717,8 +1936,12 @@ Para gerar o QR Code PIX, envie seu *CPF* (somente números)
                         await new Promise(resolve => setTimeout(resolve, 500));
                         
                         // Envia o código em outra mensagem (só texto, não precisa áudio para código)
-                        await this.sendKeepingUnread(() => client.sendText(message.from, response), message.from, response);
+                        await this.sendKeepingUnread(() => client.sendText(message.from, parsed.payload), message.from, parsed.payload);
                         try { messageStore.recordOutgoingMessage({ chatId: message.from, text: parsed.payload }); } catch (_) {}
+                        
+                        // Envia imagem com instruções de como copiar o código PIX corretamente
+                        await new Promise(resolve => setTimeout(resolve, 500));
+                        await this.sendPixInstructionsImage(message.from);
                     }
                     if (!parsed.imageBase64 && !parsed.payload) {
                         const out = '*⚠️ ERRO*\n\nPIX gerado, mas não recebi imagem nem payload utilizável da API.';
@@ -2182,6 +2405,100 @@ Para gerar seu boleto ou PIX, envie seu *CPF* (somente números)
         }
     }
 
+    /**
+     * Envia imagem com instruções de como copiar o código PIX corretamente
+     * @param {string} chatId - ID do chat
+     */
+    async sendPixInstructionsImage(chatId) {
+        try {
+            const imagesDir = path.join(__dirname, 'images');
+            if (!fs.existsSync(imagesDir)) {
+                fs.mkdirSync(imagesDir, { recursive: true });
+            }
+            
+            const imagePath = path.join(imagesDir, 'instrucoes_pix.png');
+            
+            // Verifica se a imagem existe
+            if (!fs.existsSync(imagePath)) {
+                console.log('⚠️ Imagem de instruções PIX não encontrada. Adicione o arquivo instrucoes_pix.png na pasta images/');
+                // Envia mensagem de instruções como texto caso a imagem não exista
+                const instructionsMsg = `*📋 COMO COPIAR O CÓDIGO PIX:*
+
+*✅ FORMA CORRETA:*
+*1.* Pressione e segure na mensagem do código
+*2.* Selecione "Copiar" no menu
+*3.* Cole no app do seu banco
+
+*❌ NÃO FAÇA:*
+*• Não clique diretamente no código
+*• Não copie partes do código
+
+*⚠️ IMPORTANTE:*
+Copie o código COMPLETO, do início ao fim!`;
+                await this.sendKeepingUnread(() => this.client.sendText(chatId, instructionsMsg), chatId, instructionsMsg);
+                return;
+            }
+            
+            // Envia a imagem com caption explicativo
+            const caption = `*📋 COMO COPIAR O CÓDIGO PIX:*
+
+*✅ FORMA CORRETA:*
+*1.* Pressione e segure na mensagem do código
+*2.* Selecione "Copiar" no menu
+*3.* Cole no app do seu banco
+
+*❌ NÃO FAÇA:*
+*• Não clique diretamente no código
+*• Não copie partes do código
+
+*⚠️ IMPORTANTE:*
+Copie o código COMPLETO, do início ao fim!`;
+            
+            await this.sendKeepingUnread(() => this.client.sendImage(chatId, imagePath, 'instrucoes_pix.png', caption), chatId, caption);
+            
+            // Registra no banco
+            try {
+                const fileId = `instrucoes_pix_${Date.now()}`;
+                const filesDir = path.join(__dirname, 'files');
+                if (!fs.existsSync(filesDir)) fs.mkdirSync(filesDir, { recursive: true });
+                
+                // Copia imagem para pasta files para exibição no painel
+                const destPath = path.join(filesDir, `${fileId}.png`);
+                fs.copyFileSync(imagePath, destPath);
+                
+                messageStore.recordOutgoingMessage({
+                    chatId: chatId,
+                    text: caption,
+                    timestamp: Date.now(),
+                    fileId: fileId,
+                    fileName: 'instrucoes_pix.png',
+                    fileType: 'image/png'
+                });
+            } catch (_) {
+                try { messageStore.recordOutgoingMessage({ chatId: chatId, text: caption, timestamp: Date.now() }); } catch (_) {}
+            }
+        } catch (e) {
+            console.error('Erro ao enviar imagem de instruções PIX:', e);
+            // Fallback: envia apenas texto se imagem falhar
+            try {
+                const instructionsMsg = `*📋 COMO COPIAR O CÓDIGO PIX:*
+
+*✅ FORMA CORRETA:*
+*1.* Pressione e segure na mensagem do código
+*2.* Selecione "Copiar" no menu
+*3.* Cole no app do seu banco
+
+*❌ NÃO FAÇA:*
+*• Não clique diretamente no código
+*• Não copie partes do código
+
+*⚠️ IMPORTANTE:*
+Copie o código COMPLETO, do início ao fim!`;
+                await this.sendKeepingUnread(() => this.client.sendText(chatId, instructionsMsg), chatId, instructionsMsg);
+            } catch (_) {}
+        }
+    }
+
     sleep(ms) { return new Promise(res => setTimeout(res, ms)); }
 
     // ===== Injeção no WhatsApp Web para bloquear marcação de leitura =====
@@ -2445,23 +2762,103 @@ Para gerar seu boleto ou PIX, envie seu *CPF* (somente números)
     }
 
     /**
-     * Reativa o bot para um chat específico (finaliza atendimento humano)
+     * Pausa o bot para um chat específico (inicia atendimento humano)
      * @param {string} chatId - ID do chat
+     * @param {boolean} sendMessage - Se deve enviar mensagem ao cliente (padrão: true)
      */
-    pauseBotForChat(chatId) {
+    async pauseBotForChat(chatId, sendMessage = true) {
+        const wasPaused = this.humanAttending.get(chatId) === true;
+        
         this.humanAttending.set(chatId, true);
         this.humanAttendingTime.set(chatId, Date.now());
+        
+        // Salva no banco de dados
+        try {
+            messageStore.setBotPaused(chatId, true);
+        } catch (e) {
+            console.error('Erro ao salvar estado de pausa no banco:', e);
+        }
+        
         console.log(`⏸️ Bot pausado para chat ${chatId} pelo atendente.`);
+        
+        // Envia mensagem ao cliente apenas se não estava pausado antes
+        if (!wasPaused && sendMessage && this.client) {
+            try {
+                const message = `👤 *Agora você está sendo atendido por um atendente humano.*\n\nPode falar normalmente! 😊`;
+                await this.sendKeepingUnread(() => this.client.sendText(chatId, message), chatId, message);
+            } catch (e) {
+                console.error('Erro ao enviar mensagem de atendimento humano:', e);
+            }
+        }
     }
 
     isBotPausedForChat(chatId) {
-        return this.humanAttending.get(chatId) === true;
+        // Verifica no banco também para garantir consistência
+        try {
+            const dbPaused = messageStore.isBotPaused(chatId);
+            const memoryPaused = this.humanAttending.get(chatId) === true;
+            
+            // Se há divergência, corrige
+            if (dbPaused !== memoryPaused) {
+                this.humanAttending.set(chatId, dbPaused);
+                if (dbPaused) {
+                    this.humanAttendingTime.set(chatId, Date.now());
+                }
+            }
+            
+            return dbPaused || memoryPaused;
+        } catch (e) {
+            return this.humanAttending.get(chatId) === true;
+        }
     }
 
-    reactivateBotForChat(chatId) {
+    /**
+     * Reativa o bot para um chat específico (finaliza atendimento humano)
+     * @param {string} chatId - ID do chat
+     * @param {boolean} sendMessage - Se deve enviar mensagem ao cliente (padrão: true)
+     */
+    async reactivateBotForChat(chatId, sendMessage = true) {
+        const wasPaused = this.humanAttending.get(chatId) === true;
+        
         this.humanAttending.set(chatId, false);
         this.humanAttendingTime.delete(chatId);
+        
+        // Salva no banco de dados
+        try {
+            messageStore.setBotPaused(chatId, false);
+        } catch (e) {
+            console.error('Erro ao salvar estado de reativação no banco:', e);
+        }
+        
         console.log(`🤖 Bot reativado para chat ${chatId} pelo atendente.`);
+        
+        // Envia mensagem ao cliente apenas se estava pausado antes
+        if (wasPaused && sendMessage && this.client) {
+            try {
+                const message = `🤖 *Bot reativado.*\n\nDigite o *número* da opção para continuar:`;
+                await this.sendKeepingUnread(() => this.client.sendText(chatId, message), chatId, message);
+                
+                // Mostra menu após 1 segundo
+                setTimeout(async () => {
+                    try {
+                        const menuMsg = `*COMO POSSO AJUDAR?*
+
+*1️⃣ PAGAMENTO / SEGUNDA VIA*
+
+*2️⃣ SUPORTE TÉCNICO*
+
+*3️⃣ FALAR COM ATENDENTE*
+
+*4️⃣ OUTRAS DÚVIDAS*
+
+Digite o *número* da opção`;
+                        await this.sendKeepingUnread(() => this.client.sendText(chatId, menuMsg), chatId, menuMsg);
+                    } catch (e) {}
+                }, 1000);
+            } catch (e) {
+                console.error('Erro ao enviar mensagem de reativação:', e);
+            }
+        }
     }
 
     /**
@@ -2605,14 +3002,21 @@ Para gerar seu boleto ou PIX, envie seu *CPF* (somente números)
     cleanupAbandonedAttendances() {
         try {
             const now = Date.now();
-            const maxAge = 5 * 60 * 1000; // 5 minutos
+            const maxAge = 15 * 60 * 1000; // 15 minutos (aumentado de 5 para 15)
             
-            // Verifica atendimentos ativos abandonados há mais de 5 minutos
-            for (const [chatId, timestamp] of this.humanAttendingTime.entries()) {
-                if (now - timestamp > maxAge) {
-                    this.humanAttending.set(chatId, false);
-                    this.humanAttendingTime.delete(chatId);
-                    console.log(`🤖 Atendimento humano abandonado há 5+ minutos - bot reativado automaticamente para ${chatId}`);
+            // Verifica atendimentos ativos abandonados
+            // Agora verifica última mensagem do atendente do banco, não apenas quando foi pausado
+            for (const [chatId, pausedTimestamp] of this.humanAttendingTime.entries()) {
+                if (!this.humanAttending.get(chatId)) continue; // Não está pausado, pula
+                
+                // Obtém última mensagem do atendente do banco
+                const lastAttendantMsg = messageStore.getLastAttendantMessage(chatId);
+                const timeSinceLastAttendantMsg = lastAttendantMsg ? (now - lastAttendantMsg) : (now - pausedTimestamp);
+                
+                // Se atendente não enviou mensagem há mais de 15 minutos, reativa bot
+                if (timeSinceLastAttendantMsg > maxAge) {
+                    console.log(`🤖 Atendimento humano abandonado há ${Math.floor(timeSinceLastAttendantMsg / 60000)} minutos - bot reativado automaticamente para ${chatId}`);
+                    this.reactivateBotForChat(chatId, true); // Envia mensagem ao cliente
                 }
             }
         } catch (e) {
