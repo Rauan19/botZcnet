@@ -787,6 +787,7 @@
         bottom: 0;
         background: rgba(30, 41, 59, 0.3);
         z-index: 1000;
+        height: calc(100vh - 60px);
       }
       
       .chat-area.show {
@@ -794,13 +795,37 @@
         flex-direction: column;
       }
       
-      .sidebar-header {
-        padding: 10px;
+      .chat-header {
+        flex-shrink: 0;
+        padding: 10px 12px;
+        position: relative;
+        z-index: 1001;
+        background: rgba(15, 23, 42, 0.95);
       }
       
-      .search-box {
-        padding: 7px 10px;
+      .messages-container {
+        padding: 10px;
+        overflow-y: auto;
+        overflow-x: hidden;
+        flex: 1;
+        min-height: 0;
+        -webkit-overflow-scrolling: touch;
+      }
+      
+      .message-input-container {
+        flex-shrink: 0;
+        padding: 10px 12px;
+      }
+      
+      .message {
+        max-width: 85%;
+        margin-bottom: 6px;
+      }
+      
+      .message-bubble {
+        padding: 8px 10px;
         font-size: 13px;
+        border-radius: 14px;
       }
       
       #statsPanel {
@@ -1083,10 +1108,200 @@
         font-size: 14px;
       }
     }
+    
+    /* Modal de Login */
+    .login-modal {
+      display: flex;
+      position: fixed;
+      z-index: 10001;
+      left: 0;
+      top: 0;
+      width: 100%;
+      height: 100%;
+      background: rgba(0, 0, 0, 0.95);
+      backdrop-filter: blur(10px);
+      align-items: center;
+      justify-content: center;
+      animation: fadeIn 0.3s ease;
+    }
+    
+    .login-modal.hidden {
+      display: none;
+    }
+    
+    .login-container {
+      background: rgba(15, 23, 42, 0.98);
+      border: 1px solid rgba(59, 130, 246, 0.3);
+      border-radius: 20px;
+      padding: 40px;
+      max-width: 400px;
+      width: 90%;
+      box-shadow: 0 20px 60px rgba(0, 0, 0, 0.5);
+      animation: slideUp 0.3s ease;
+    }
+    
+    @keyframes slideUp {
+      from {
+        opacity: 0;
+        transform: translateY(30px);
+      }
+      to {
+        opacity: 1;
+        transform: translateY(0);
+      }
+    }
+    
+    .login-title {
+      font-size: 28px;
+      font-weight: 700;
+      text-align: center;
+      margin-bottom: 10px;
+      background: linear-gradient(135deg, #3b82f6, #2563eb);
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+      background-clip: text;
+    }
+    
+    .login-subtitle {
+      text-align: center;
+      color: #94a3b8;
+      font-size: 14px;
+      margin-bottom: 30px;
+    }
+    
+    .login-form {
+      display: flex;
+      flex-direction: column;
+      gap: 20px;
+    }
+    
+    .login-input-group {
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+    }
+    
+    .login-label {
+      font-size: 14px;
+      font-weight: 600;
+      color: #e2e8f0;
+    }
+    
+    .login-input {
+      padding: 14px 16px;
+      background: rgba(30, 41, 59, 0.8);
+      border: 2px solid rgba(71, 85, 105, 0.3);
+      border-radius: 12px;
+      color: #e2e8f0;
+      font-size: 15px;
+      outline: none;
+      transition: all 0.2s;
+    }
+    
+    .login-input:focus {
+      border-color: #3b82f6;
+      box-shadow: 0 0 0 4px rgba(59, 130, 246, 0.1);
+      background: rgba(30, 41, 59, 1);
+    }
+    
+    .login-input::placeholder {
+      color: #94a3b8;
+    }
+    
+    .login-btn {
+      padding: 14px 24px;
+      background: linear-gradient(135deg, #3b82f6, #2563eb);
+      color: white;
+      border: none;
+      border-radius: 12px;
+      font-weight: 600;
+      font-size: 16px;
+      cursor: pointer;
+      transition: all 0.2s;
+      margin-top: 10px;
+    }
+    
+    .login-btn:hover {
+      transform: translateY(-2px);
+      box-shadow: 0 8px 24px rgba(59, 130, 246, 0.4);
+    }
+    
+    .login-btn:disabled {
+      opacity: 0.5;
+      cursor: not-allowed;
+      transform: none;
+    }
+    
+    .login-error {
+      background: rgba(239, 68, 68, 0.1);
+      border: 1px solid rgba(239, 68, 68, 0.3);
+      color: #fca5a5;
+      padding: 12px;
+      border-radius: 8px;
+      font-size: 14px;
+      display: none;
+    }
+    
+    .login-error.show {
+      display: block;
+    }
+    
+    @media (max-width: 768px) {
+      .login-container {
+        padding: 30px 20px;
+        max-width: 95%;
+      }
+      
+      .login-title {
+        font-size: 24px;
+      }
+    }
   </style>
 </head>
 <body>
-  <div class="app-container">
+  <!-- Modal de Login -->
+  <div class="login-modal hidden" id="loginModal">
+    <div class="login-container">
+      <h1 class="login-title">🔐 Acesso ao Painel</h1>
+      <p class="login-subtitle">Digite suas credenciais para continuar</p>
+      
+      <div class="login-error" id="loginError">
+        <strong>❌ Erro:</strong> <span id="loginErrorText">Email ou senha incorretos</span>
+      </div>
+      
+      <form class="login-form" id="loginForm">
+        <div class="login-input-group">
+          <label class="login-label" for="loginEmail">Email</label>
+          <input 
+            type="email" 
+            id="loginEmail" 
+            class="login-input" 
+            placeholder="seu@email.com" 
+            required 
+            autocomplete="email"
+          >
+        </div>
+        
+        <div class="login-input-group">
+          <label class="login-label" for="loginPassword">Senha</label>
+          <input 
+            type="password" 
+            id="loginPassword" 
+            class="login-input" 
+            placeholder="••••••••" 
+            required 
+            autocomplete="current-password"
+          >
+        </div>
+        
+        <button type="submit" class="login-btn" id="loginBtn">
+          <span id="loginBtnText">Entrar</span>
+        </button>
+      </form>
+    </div>
+  </div>
+  
+  <div class="app-container" id="appContainer" style="display: none;">
     <header class="header">
       <button class="menu-toggle" id="menuToggle">☰</button>
       <h1>ZCNET CHAT ATENDIMENTO</h1>
@@ -1215,21 +1430,233 @@
   </div>
 
   <script>
+    // Sistema de Autenticação
+    let isAuthenticated = false;
+    const AUTH_TOKEN_KEY = 'dashboard_auth_token';
+    
+    // Função auxiliar para adicionar token às URLs de arquivos
+    function getFileUrl(fileId) {
+      if (!fileId) return '';
+      // Sempre busca o token atual do localStorage
+      const token = localStorage.getItem(AUTH_TOKEN_KEY);
+      if (!token) {
+        console.warn('⚠️ Token não encontrado ao gerar URL de arquivo:', fileId);
+        // Mesmo sem token, retorna URL com token placeholder para forçar erro se não autenticado
+        return `/api/files/${encodeURIComponent(fileId)}?token=`;
+      }
+      return `/api/files/${encodeURIComponent(fileId)}?token=${encodeURIComponent(token)}`;
+    }
+    
+    // Função auxiliar para adicionar token às URLs de áudio
+    function getAudioUrl(chatId, audioId) {
+      if (!chatId || !audioId) return '';
+      // Sempre busca o token atual do localStorage
+      const token = localStorage.getItem(AUTH_TOKEN_KEY);
+      if (!token) {
+        console.warn('⚠️ Token não encontrado ao gerar URL de áudio:', chatId, audioId);
+        // Mesmo sem token, retorna URL com token placeholder para forçar erro se não autenticado
+        return `/api/chats/${encodeURIComponent(chatId)}/audio/${encodeURIComponent(audioId)}?token=`;
+      }
+      return `/api/chats/${encodeURIComponent(chatId)}/audio/${encodeURIComponent(audioId)}?token=${encodeURIComponent(token)}`;
+    }
+    
+    function showLoginModal() {
+      const modal = document.getElementById('loginModal');
+      const container = document.getElementById('appContainer');
+      if (modal) modal.classList.remove('hidden');
+      if (container) container.style.display = 'none';
+    }
+    
+    function showDashboard() {
+      const modal = document.getElementById('loginModal');
+      const container = document.getElementById('appContainer');
+      if (modal) modal.classList.add('hidden');
+      if (container) container.style.display = 'flex';
+    }
+    
+    // Verifica autenticação ao carregar a página
+    async function initAuth() {
+      const token = localStorage.getItem(AUTH_TOKEN_KEY);
+      console.log('🔐 Verificando autenticação...', token ? 'Token encontrado' : 'Sem token');
+      
+      if (!token) {
+        console.log('❌ Sem token, mostrando modal de login');
+        showLoginModal();
+        return false;
+      }
+      
+      try {
+        console.log('🔍 Verificando token no servidor...');
+        const response = await fetch('/api/auth/verify', {
+          method: 'GET',
+          headers: {
+            'Authorization': `Bearer ${token}`
+          }
+        });
+        
+        console.log('📡 Resposta do servidor:', response.status, response.statusText);
+        
+        if (response.ok) {
+          const data = await response.json();
+          console.log('✅ Token válido:', data);
+          if (data.valid) {
+            isAuthenticated = true;
+            showDashboard();
+            return true;
+          }
+        } else {
+          const errorData = await response.json().catch(() => ({}));
+          console.log('❌ Token inválido:', errorData);
+        }
+        
+        // Se chegou aqui, token inválido
+        localStorage.removeItem(AUTH_TOKEN_KEY);
+        showLoginModal();
+        return false;
+      } catch (e) {
+        console.error('❌ Erro ao verificar autenticação:', e);
+        localStorage.removeItem(AUTH_TOKEN_KEY);
+        showLoginModal();
+        return false;
+      }
+    }
+    
+    // Login
+    document.getElementById('loginForm').addEventListener('submit', async (e) => {
+      e.preventDefault();
+      
+      const email = document.getElementById('loginEmail').value;
+      const password = document.getElementById('loginPassword').value;
+      const loginBtn = document.getElementById('loginBtn');
+      const loginBtnText = document.getElementById('loginBtnText');
+      const errorDiv = document.getElementById('loginError');
+      const errorText = document.getElementById('loginErrorText');
+      
+      // Esconde erro anterior
+      errorDiv.classList.remove('show');
+      
+      // Desabilita botão
+      loginBtn.disabled = true;
+      loginBtnText.textContent = 'Entrando...';
+      
+      try {
+        const response = await fetch('/api/auth/login', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json'
+          },
+          body: JSON.stringify({ email, password })
+        });
+        
+        const data = await response.json();
+        
+        if (response.ok && data.token) {
+          // Salva token
+          localStorage.setItem(AUTH_TOKEN_KEY, data.token);
+          isAuthenticated = true;
+          showDashboard();
+          
+          // Recarrega a página para inicializar tudo
+          window.location.reload();
+        } else {
+          // Mostra erro
+          errorText.textContent = data.error || 'Email ou senha incorretos';
+          errorDiv.classList.add('show');
+          loginBtn.disabled = false;
+          loginBtnText.textContent = 'Entrar';
+        }
+      } catch (e) {
+        errorText.textContent = 'Erro ao conectar com o servidor. Tente novamente.';
+        errorDiv.classList.add('show');
+        loginBtn.disabled = false;
+        loginBtnText.textContent = 'Entrar';
+      }
+    });
+    
     let currentChatId = null;
     let allChats = [];
     let filteredChats = [];
 
     async function fetchJSON(url, options) {
       const opts = options ? { ...options } : {};
+      const token = localStorage.getItem(AUTH_TOKEN_KEY);
+      
+      // Adiciona token ao header se existir
+      if (token) {
+        opts.headers = opts.headers || {};
+        opts.headers['Authorization'] = `Bearer ${token}`;
+      }
+      
       // Evita cache em requisições GET
       if (!opts.method || String(opts.method).toUpperCase() === 'GET') {
         const sep = url.includes('?') ? '&' : '?';
         url = `${url}${sep}t=${Date.now()}`;
         opts.cache = 'no-store';
       }
+      
       const res = await fetch(url, opts);
+      
+      // Se não autorizado, redireciona para login
+      if (res.status === 401) {
+        localStorage.removeItem(AUTH_TOKEN_KEY);
+        showLoginModal();
+        throw new Error('Não autorizado');
+      }
+      
       if (!res.ok) throw new Error('HTTP ' + res.status);
       return await res.json();
+    }
+    
+    // Verifica autenticação ao carregar
+    // Aguarda DOM estar pronto antes de verificar
+    (function() {
+      function checkAndInit() {
+        initAuth().then((authenticated) => {
+          console.log('🔐 Resultado da autenticação:', authenticated);
+          if (authenticated) {
+            initializeDashboard();
+          }
+        }).catch((err) => {
+          console.error('❌ Erro na inicialização:', err);
+          showLoginModal();
+        });
+      }
+      
+      if (document.readyState === 'loading') {
+        document.addEventListener('DOMContentLoaded', checkAndInit);
+      } else {
+        // DOM já está pronto
+        checkAndInit();
+      }
+    })();
+    
+    // Inicializa dashboard após autenticação
+    function initializeDashboard() {
+      // Carrega dados iniciais
+      loadStats();
+      loadChats();
+      
+      // Auto-refresh: atualiza chats a cada 10 segundos (silencioso)
+      setInterval(() => {
+        if (isAuthenticated) {
+          loadChats(true).catch(() => {});
+        }
+      }, 10000);
+      
+      // Auto-refresh mensagens: só atualiza se tiver chat aberto (silencioso)
+      setInterval(() => {
+        if (isAuthenticated && currentChatId) {
+          loadMessages(true).catch(() => {});
+          loadBotStatus().catch(() => {}); // Atualiza status do bot também
+        }
+      }, 5000);
+      
+      // Auto-refresh das estatísticas a cada 10 segundos
+      setInterval(() => {
+        if (isAuthenticated) {
+          loadStats();
+        }
+      }, 10000);
     }
 
     function formatTime(ts) {
@@ -1476,6 +1903,14 @@
     let isLoadingMessages = false;
     async function loadMessages(silent = false) {
       if (!currentChatId || isLoadingMessages) return;
+      
+      // Verifica se está autenticado antes de carregar mensagens
+      const token = localStorage.getItem(AUTH_TOKEN_KEY);
+      if (!token) {
+        console.warn('⚠️ Tentativa de carregar mensagens sem token');
+        return;
+      }
+      
       isLoadingMessages = true;
       
       try {
@@ -1642,19 +2077,20 @@
                 } else if (isPdf) {
                   // Limpa o texto se contiver base64 ou dados de arquivo
                   const cleanText = cleanTextForFile(msg.text || '');
+                  const pdfUrl = getFileUrl(msg.fileId);
                   contentHtml = `
                     <div class="pdf-viewer">
-                      <iframe src="/api/files/${encodeURIComponent(msg.fileId)}#toolbar=1" 
+                      <iframe src="${pdfUrl}#toolbar=1" 
                               type="application/pdf" 
                               style="width: 100%; height: 400px; border: none; border-radius: 8px; background: #1e293b;"
                               title="Visualizador de PDF">
                       </iframe>
                       <div style="margin-top: 8px; display: flex; gap: 8px; flex-wrap: wrap;">
-                        <a href="/api/files/${encodeURIComponent(msg.fileId)}" target="_blank" 
+                        <a href="${pdfUrl}" target="_blank" 
                            class="btn btn-secondary" style="text-decoration: none; display: inline-flex;">
                           📄 Abrir PDF
                         </a>
-                        <a href="/api/files/${encodeURIComponent(msg.fileId)}" download="${escapeHtml(fileName)}" 
+                        <a href="${pdfUrl}" download="${escapeHtml(fileName)}" 
                            class="btn btn-secondary" style="text-decoration: none; display: inline-flex;">
                           💾 Baixar PDF
                         </a>
@@ -1663,7 +2099,7 @@
                     </div>`;
                 } else if (isQrCode || isImage) {
                   // Renderiza apenas a imagem, SEM texto abaixo
-                  const imageUrl = `/api/files/${encodeURIComponent(msg.fileId)}`;
+                  const imageUrl = getFileUrl(msg.fileId);
                   const safeFileName = escapeHtml(fileName).replace(/'/g, "&#39;");
                   contentHtml = `
                     <div class="image-message">
@@ -1675,7 +2111,7 @@
                 } else if (hasFile) {
                   const cleanText = cleanTextForFile(msg.text || '');
                   contentHtml = `
-                    <a class="attachment" href="/api/files/${encodeURIComponent(msg.fileId)}" target="_blank" rel="noopener">
+                    <a class="attachment" href="${getFileUrl(msg.fileId)}" target="_blank" rel="noopener">
                       <div class="icon">📄</div>
                       <div class="name" title="${escapeHtml(fileName)}">${escapeHtml(fileName)}</div>
                     </a>
@@ -1813,19 +2249,20 @@
               // O PDF já é auto-explicativo, não precisa mostrar texto adicional
               // Limpa o texto se contiver base64 ou dados de arquivo
               const cleanText = cleanTextForFile(msg.text || '');
+              const pdfUrl = getFileUrl(msg.fileId);
               contentHtml = `
                 <div class="pdf-viewer">
-                  <iframe src="/api/files/${encodeURIComponent(msg.fileId)}#toolbar=1" 
+                  <iframe src="${pdfUrl}#toolbar=1" 
                           type="application/pdf" 
                           style="width: 100%; height: 400px; border: none; border-radius: 8px; background: #1e293b;"
                           title="Visualizador de PDF">
                   </iframe>
                   <div style="margin-top: 8px; display: flex; gap: 8px; flex-wrap: wrap;">
-                    <a href="/api/files/${encodeURIComponent(msg.fileId)}" target="_blank" 
+                    <a href="${pdfUrl}" target="_blank" 
                        class="btn btn-secondary" style="text-decoration: none; display: inline-flex;">
                       📄 Abrir PDF
                     </a>
-                    <a href="/api/files/${encodeURIComponent(msg.fileId)}" download="${escapeHtml(fileName)}" 
+                    <a href="${pdfUrl}" download="${escapeHtml(fileName)}" 
                        class="btn btn-secondary" style="text-decoration: none; display: inline-flex;">
                       💾 Baixar PDF
                     </a>
@@ -1834,7 +2271,7 @@
                 </div>`;
             } else if (isQrCode || isImage) {
               // Renderiza apenas a imagem, SEM texto abaixo
-              const imageUrl = `/api/files/${encodeURIComponent(msg.fileId)}`;
+              const imageUrl = getFileUrl(msg.fileId);
               const safeFileName = escapeHtml(fileName).replace(/'/g, "&#39;");
               contentHtml = `
                 <div class="image-message">
@@ -1846,7 +2283,7 @@
             } else if (hasFile) {
               const cleanText = cleanTextForFile(msg.text || '');
               contentHtml = `
-                <a class=\"attachment\" href=\"/api/files/${encodeURIComponent(msg.fileId)}\" target=\"_blank\" rel=\"noopener\">
+                <a class=\"attachment\" href=\"${getFileUrl(msg.fileId)}\" target=\"_blank\" rel=\"noopener\">
                   <div class=\"icon\">📄</div>
                   <div class=\"name\" title=\"${escapeHtml(fileName)}\">${escapeHtml(fileName)}</div>
                 </a>
@@ -2342,8 +2779,12 @@
         const formData = new FormData();
         formData.append('audio', audioBlob, 'audio.ogg');
         
+        const token = localStorage.getItem(AUTH_TOKEN_KEY);
         const response = await fetch(`/api/chats/${encodeURIComponent(currentChatId)}/send-audio`, {
           method: 'POST',
+          headers: {
+            'Authorization': `Bearer ${token}`
+          },
           body: formData
         });
         
@@ -2405,8 +2846,8 @@
           return;
         }
         
-        // Cria URL para baixar o áudio
-        const audioUrl = `/api/chats/${encodeURIComponent(currentChatId)}/audio/${encodeURIComponent(audioId)}`;
+        // Cria URL para baixar o áudio com token
+        const audioUrl = getAudioUrl(currentChatId, audioId);
         const audio = new Audio(audioUrl);
         
         window.currentAudio = audio;
@@ -2544,8 +2985,12 @@
       attachBtn.disabled = true;
       
       try {
+        const token = localStorage.getItem(AUTH_TOKEN_KEY);
         const response = await fetch(`/api/chats/${encodeURIComponent(currentChatId)}/send-image`, {
           method: 'POST',
+          headers: {
+            'Authorization': `Bearer ${token}`
+          },
           body: formData
         });
         
@@ -2597,8 +3042,12 @@
       attachBtn.disabled = true;
       
       try {
+        const token = localStorage.getItem(AUTH_TOKEN_KEY);
         const response = await fetch(`/api/chats/${encodeURIComponent(currentChatId)}/send-file`, {
           method: 'POST',
+          headers: {
+            'Authorization': `Bearer ${token}`
+          },
           body: formData
         });
         
@@ -2663,21 +3112,9 @@
       }
     });
 
-    // Auto-refresh: atualiza chats a cada 10 segundos (silencioso)
-    setInterval(() => {
-      loadChats(true).catch(() => {});
-    }, 10000);
-    
-    // Auto-refresh mensagens: só atualiza se tiver chat aberto (silencioso)
-    setInterval(() => {
-      if (currentChatId) {
-        loadMessages(true).catch(() => {});
-        loadBotStatus().catch(() => {}); // Atualiza status do bot também
-      }
-    }, 5000);
-    
     // Carrega estatísticas
     async function loadStats() {
+      if (!isAuthenticated) return;
       try {
         const stats = await fetchJSON('/api/stats');
         document.getElementById('statTotalChats').textContent = stats.totalChats || 0;
@@ -2689,14 +3126,8 @@
       }
     }
     
-    // Auto-refresh das estatísticas a cada 10 segundos
-    setInterval(() => loadStats(), 10000);
-
-    // Inicialização
-    loadStats();
-    loadChats();
-
     async function waitAndRefresh(expectedIncrease = 0) {
+      if (!isAuthenticated) return;
       // Tenta 3 vezes com pequenos intervalos para garantir que o banco persistiu
       for (let i = 0; i < 3; i++) {
         await loadMessages().catch(()=>{});
@@ -2705,6 +3136,7 @@
     }
 
     async function sendCurrent() {
+      if (!isAuthenticated) return;
       const input = document.getElementById('text'); const text = input.value.trim(); if (!text || !currentChatId) return; input.disabled = true;
       try { await fetchJSON(`/api/chats/${encodeURIComponent(currentChatId)}/send`, { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ text }) }); input.value=''; await waitAndRefresh(); await loadChats(); } catch(e) {} finally { input.disabled=false; input.focus(); }
     }

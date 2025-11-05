@@ -9,9 +9,103 @@ const fs = require('fs');
 const https = require('https');
 const ffmpeg = require('fluent-ffmpeg');
 const ffmpegStatic = require('ffmpeg-static');
+const crypto = require('crypto');
 
 // Configuração de limpeza automática de arquivos PDF antigos
 const CLEANUP_INTERVAL = 30 * 60 * 1000; // 30 minutos
+
+// Configuração de autenticação
+// IMPORTANTE: Configure essas credenciais em variáveis de ambiente em produção
+const ADMIN_EMAIL = process.env.ADMIN_EMAIL || 'admin@zcnet.com.br';
+const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || 'admin123'; // Mude isso em produção!
+
+// Secret para assinar tokens (use uma string aleatória forte em produção)
+const TOKEN_SECRET = process.env.TOKEN_SECRET || 'zcnet-secret-key-change-in-production';
+
+// Gera token assinado que pode ser validado sem armazenar em memória
+function generateToken(email) {
+    const timestamp = Date.now();
+    const expiresAt = timestamp + (24 * 60 * 60 * 1000); // 24 horas
+    const payload = `${email}:${expiresAt}`;
+    const signature = crypto.createHmac('sha256', TOKEN_SECRET)
+        .update(payload)
+        .digest('hex');
+    return Buffer.from(`${payload}:${signature}`).toString('base64');
+}
+
+// Valida token sem precisar armazenar em memória
+function validateToken(token) {
+    try {
+        const decoded = Buffer.from(token, 'base64').toString('utf-8');
+        const parts = decoded.split(':');
+        
+        if (parts.length !== 3) {
+            return null;
+        }
+        
+        const email = parts[0];
+        const expiresAt = parseInt(parts[1]);
+        const signature = parts[2];
+        
+        // Verifica se expirou
+        if (Date.now() > expiresAt) {
+            return null;
+        }
+        
+        // Verifica assinatura
+        const payload = `${email}:${expiresAt}`;
+        const expectedSignature = crypto.createHmac('sha256', TOKEN_SECRET)
+            .update(payload)
+            .digest('hex');
+        
+        if (signature !== expectedSignature) {
+            return null;
+        }
+        
+        // Verifica se é o email admin
+        if (email !== ADMIN_EMAIL) {
+            return null;
+        }
+        
+        return { email, expiresAt };
+    } catch (e) {
+        return null;
+    }
+}
+
+// Middleware de autenticação
+function authenticateToken(req, res, next) {
+    // Rotas públicas não precisam de autenticação
+    const publicRoutes = ['/api/auth/login', '/api/auth/verify', '/'];
+    if (publicRoutes.includes(req.path)) {
+        return next();
+    }
+    
+    // Rotas que aceitam token via query string OU header
+    const tokenRoutes = ['/api/files', '/api/chats'];
+    const isTokenRoute = tokenRoutes.some(route => req.path.startsWith(route));
+    
+    if (isTokenRoute) {
+        // Para rotas de arquivos/áudios, permite passar via query string ou header
+        // O endpoint específico irá validar o token
+        return next();
+    }
+    
+    // Para outras rotas, exige token válido no header
+    const authHeader = req.headers['authorization'];
+    const token = authHeader && authHeader.split(' ')[1];
+    
+    if (!token) {
+        return res.status(401).json({ error: 'Token não fornecido' });
+    }
+    
+    const tokenData = validateToken(token);
+    if (!tokenData) {
+        return res.status(401).json({ error: 'Token inválido ou expirado' });
+    }
+    
+    next();
+}
 
 // Configura FFmpeg
 if (ffmpegStatic) {
@@ -118,12 +212,83 @@ class App {
             const app = express();
             const PORT = process.env.PORT || 3000;
             app.use(express.json());
+            
+            // Aplica middleware de autenticação em todas as rotas (exceto login e página inicial)
+            app.use(authenticateToken);
+            
+            // API: Login (pública)
+            app.post('/api/auth/login', (req, res) => {
+                try {
+                    const { email, password } = req.body;
+                    
+                    if (!email || !password) {
+                        return res.status(400).json({ error: 'Email e senha são obrigatórios' });
+                    }
+                    
+                    // Verifica credenciais
+                    if (email === ADMIN_EMAIL && password === ADMIN_PASSWORD) {
+                        const token = generateToken(email);
+                        
+                        console.log(`✅ Login realizado: ${email}`);
+                        return res.json({ token, email });
+                    } else {
+                        console.log(`❌ Tentativa de login falhou: ${email}`);
+                        return res.status(401).json({ error: 'Email ou senha incorretos' });
+                    }
+                } catch (e) {
+                    console.error('❌ Erro no login:', e);
+                    return res.status(500).json({ error: 'Erro interno do servidor' });
+                }
+            });
+            
+            // API: Verificar token
+            app.get('/api/auth/verify', (req, res) => {
+                const authHeader = req.headers['authorization'];
+                const token = authHeader && authHeader.split(' ')[1];
+                
+                if (!token) {
+                    return res.status(401).json({ error: 'Token não fornecido' });
+                }
+                
+                const tokenData = validateToken(token);
+                if (!tokenData) {
+                    return res.status(401).json({ error: 'Token inválido ou expirado' });
+                }
+                
+                res.json({ valid: true });
+            });
+            
             // Diretório de arquivos (PDFs, etc.)
             const filesDir = path.join(__dirname, 'files');
             if (!fs.existsSync(filesDir)) fs.mkdirSync(filesDir, { recursive: true });
             // Endpoint para baixar/abrir arquivos por ID
+            // Aceita token via query string ou header Authorization
             app.get('/api/files/:id', (req, res) => {
                 try {
+                    // Verifica token via query string ou header
+                    let token = req.query.token || (req.headers['authorization'] && req.headers['authorization'].split(' ')[1]);
+                    
+                    // Decodifica o token se vier via query string (pode estar URL-encoded)
+                    if (token && req.query.token) {
+                        try {
+                            token = decodeURIComponent(token);
+                        } catch (e) {
+                            // Se falhar ao decodificar, usa o token original
+                        }
+                    }
+                    
+                    // Se token está vazio (string vazia), também considera como não fornecido
+                    if (!token || token.trim() === '') {
+                        console.log('❌ Token não fornecido para arquivo:', req.params.id);
+                        return res.status(401).json({ error: 'Token não fornecido' });
+                    }
+                    
+                    const tokenData = validateToken(token);
+                    if (!tokenData) {
+                        console.log('❌ Token inválido ou expirado para arquivo:', req.params.id);
+                        return res.status(401).json({ error: 'Token inválido ou expirado' });
+                    }
+                    
                     const id = req.params.id;
                     const filePath = path.join(filesDir, id);
                     if (!fs.existsSync(filePath)) return res.status(404).json({ error: 'not_found' });
@@ -144,6 +309,7 @@ class App {
                     
                     res.sendFile(filePath);
                 } catch (e) {
+                    console.error('❌ Erro ao servir arquivo:', e);
                     res.status(500).json({ error: 'internal_error' });
                 }
             });
@@ -338,8 +504,33 @@ class App {
             });
 
             // API: baixar áudio
+            // Aceita token via query string ou header Authorization
             app.get('/api/chats/:chatId/audio/:audioId', (req, res) => {
                 try {
+                    // Verifica token via query string ou header
+                    let token = req.query.token || (req.headers['authorization'] && req.headers['authorization'].split(' ')[1]);
+                    
+                    // Decodifica o token se vier via query string (pode estar URL-encoded)
+                    if (token && req.query.token) {
+                        try {
+                            token = decodeURIComponent(token);
+                        } catch (e) {
+                            // Se falhar ao decodificar, usa o token original
+                        }
+                    }
+                    
+                    // Se token está vazio (string vazia), também considera como não fornecido
+                    if (!token || token.trim() === '') {
+                        console.log('❌ Token não fornecido para áudio:', req.params.audioId);
+                        return res.status(401).json({ error: 'Token não fornecido' });
+                    }
+                    
+                    const tokenData = validateToken(token);
+                    if (!tokenData) {
+                        console.log('❌ Token inválido ou expirado para áudio:', req.params.audioId);
+                        return res.status(401).json({ error: 'Token inválido ou expirado' });
+                    }
+                    
                     const { audioId } = req.params;
                     
                     // Garante que o diretório existe
