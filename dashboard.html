@@ -575,6 +575,51 @@
       transform: scale(1.1);
     }
     
+    .attach-btn-wrapper {
+      position: relative;
+    }
+    
+    .attach-menu {
+      position: absolute;
+      bottom: 100%;
+      left: 0;
+      margin-bottom: 8px;
+      background: rgba(15, 23, 42, 0.98);
+      border: 1px solid rgba(30, 41, 59, 0.5);
+      border-radius: 12px;
+      padding: 8px;
+      min-width: 150px;
+      box-shadow: 0 8px 24px rgba(0, 0, 0, 0.3);
+      z-index: 1000;
+      backdrop-filter: blur(10px);
+    }
+    
+    .attach-menu-item {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      width: 100%;
+      padding: 12px 16px;
+      background: transparent;
+      border: none;
+      color: #e2e8f0;
+      font-size: 14px;
+      font-weight: 500;
+      cursor: pointer;
+      border-radius: 8px;
+      transition: all 0.2s;
+      text-align: left;
+    }
+    
+    .attach-menu-item:hover {
+      background: rgba(59, 130, 246, 0.15);
+      color: #3b82f6;
+    }
+    
+    .attach-menu-item span:first-child {
+      font-size: 18px;
+    }
+    
     .audio-recording {
       display: flex;
       align-items: center;
@@ -884,6 +929,21 @@
         font-size: 18px;
       }
       
+      .attach-menu {
+        min-width: 140px;
+        padding: 6px;
+      }
+      
+      .attach-menu-item {
+        padding: 10px 12px;
+        font-size: 13px;
+        gap: 10px;
+      }
+      
+      .attach-menu-item span:first-child {
+        font-size: 16px;
+      }
+      
       .message-input {
         padding: 8px 12px;
         font-size: 13px;
@@ -909,6 +969,118 @@
       /* Se não tem chat selecionado, mostra mensagem inicial */
       #messages .empty-state {
         padding: 40px 20px;
+      }
+    }
+    
+    /* Modal de imagem */
+    .image-modal {
+      display: none;
+      position: fixed;
+      z-index: 10000;
+      left: 0;
+      top: 0;
+      width: 100%;
+      height: 100%;
+      background: rgba(0, 0, 0, 0.9);
+      backdrop-filter: blur(5px);
+      animation: fadeIn 0.2s ease;
+    }
+    
+    .image-modal.active {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+    
+    .image-modal-content {
+      position: relative;
+      max-width: 90%;
+      max-height: 90%;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+    
+    .image-modal-content img {
+      max-width: 100%;
+      max-height: 90vh;
+      border-radius: 12px;
+      box-shadow: 0 8px 32px rgba(0, 0, 0, 0.5);
+      object-fit: contain;
+    }
+    
+    .image-modal-close {
+      position: absolute;
+      top: -40px;
+      right: 0;
+      background: rgba(255, 255, 255, 0.2);
+      border: none;
+      color: white;
+      font-size: 32px;
+      width: 40px;
+      height: 40px;
+      border-radius: 50%;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      transition: all 0.2s;
+      backdrop-filter: blur(10px);
+    }
+    
+    .image-modal-close:hover {
+      background: rgba(255, 255, 255, 0.3);
+      transform: scale(1.1);
+    }
+    
+    .image-modal-download {
+      position: absolute;
+      bottom: -50px;
+      left: 50%;
+      transform: translateX(-50%);
+      background: linear-gradient(135deg, #3b82f6, #2563eb);
+      color: white;
+      border: none;
+      padding: 10px 20px;
+      border-radius: 8px;
+      cursor: pointer;
+      font-weight: 600;
+      transition: all 0.2s;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+    
+    .image-modal-download:hover {
+      transform: translateX(-50%) translateY(-2px);
+      box-shadow: 0 4px 12px rgba(59, 130, 246, 0.4);
+    }
+    
+    @keyframes fadeIn {
+      from { opacity: 0; }
+      to { opacity: 1; }
+    }
+    
+    @media (max-width: 768px) {
+      .image-modal-content {
+        max-width: 95%;
+      }
+      
+      .image-modal-content img {
+        max-height: 85vh;
+      }
+      
+      .image-modal-close {
+        top: -35px;
+        width: 35px;
+        height: 35px;
+        font-size: 24px;
+      }
+      
+      .image-modal-download {
+        bottom: -45px;
+        padding: 8px 16px;
+        font-size: 14px;
       }
     }
   </style>
@@ -991,6 +1163,23 @@
             <button class="audio-btn" id="audioBtn" title="Gravar áudio">
               <span id="audioIcon">🎤</span>
             </button>
+            <div class="attach-btn-wrapper" style="position: relative;">
+              <button class="audio-btn" id="attachBtn" title="Anexar arquivo ou imagem">
+                <span>📎</span>
+              </button>
+              <div class="attach-menu" id="attachMenu" style="display: none;">
+                <button class="attach-menu-item" id="attachImageBtn">
+                  <span>🖼️</span>
+                  <span>Imagem</span>
+                </button>
+                <button class="attach-menu-item" id="attachFileBtn">
+                  <span>📎</span>
+                  <span>Arquivo</span>
+                </button>
+              </div>
+            </div>
+            <input type="file" id="fileInput" accept="*/*" style="display: none;">
+            <input type="file" id="imageInput" accept="image/*" style="display: none;">
             <input type="text" 
                    class="message-input" 
                    id="messageInput" 
@@ -1010,6 +1199,18 @@
           </div>
         </div>
       </section>
+    </div>
+  </div>
+  
+  <!-- Modal para visualizar imagens -->
+  <div class="image-modal" id="imageModal">
+    <div class="image-modal-content">
+      <button class="image-modal-close" id="imageModalClose">&times;</button>
+      <img id="imageModalImg" src="" alt="Imagem">
+      <a id="imageModalDownload" href="#" download class="image-modal-download">
+        <span>💾</span>
+        <span>Baixar</span>
+      </a>
     </div>
   </div>
 
@@ -1403,10 +1604,17 @@
                 // Renderiza conteúdo da mensagem (código reutilizado)
                 const isAudio = msg.text === '[áudio]';
                 const hasFile = !!msg.fileId;
-                const isPdf = hasFile && String(msg.fileType || '').includes('pdf');
-                const isImage = hasFile && String(msg.fileType || '').startsWith('image/');
-                const isQrCode = isImage && (msg.fileName?.toLowerCase().includes('qrcode') || msg.text?.includes('QRCode'));
+                const fileType = String(msg.fileType || '').toLowerCase();
                 const fileName = msg.fileName || 'arquivo.pdf';
+                const fileNameLower = fileName.toLowerCase();
+                // Detecta imagem pelo fileType OU pelo nome do arquivo
+                const isImage = hasFile && (
+                  fileType.startsWith('image/') || 
+                  fileNameLower.match(/\.(jpg|jpeg|png|gif|webp|bmp|svg)$/i) ||
+                  msg.text === '[imagem]'
+                );
+                const isPdf = hasFile && (fileType.includes('pdf') || fileNameLower.endsWith('.pdf'));
+                const isQrCode = isImage && (fileNameLower.includes('qrcode') || msg.text?.includes('QRCode'));
                 
                 const cleanTextForFile = (text) => {
                   if (!text) return '';
@@ -1454,14 +1662,15 @@
                       ${cleanText && cleanText !== '[arquivo]' && cleanText.length > 3 ? `<div class="message-text" style="margin-top: 8px;">${escapeHtml(cleanText)}</div>` : ''}
                     </div>`;
                 } else if (isQrCode || isImage) {
-                  const cleanText = cleanTextForFile(msg.text || '');
+                  // Renderiza apenas a imagem, SEM texto abaixo
+                  const imageUrl = `/api/files/${encodeURIComponent(msg.fileId)}`;
+                  const safeFileName = escapeHtml(fileName).replace(/'/g, "&#39;");
                   contentHtml = `
                     <div class="image-message">
-                      <img src="/api/files/${encodeURIComponent(msg.fileId)}" 
+                      <img src="${imageUrl}" 
                            alt="${escapeHtml(fileName)}" 
-                           style="max-width: 250px; max-height: 250px; border-radius: 12px; display: block; margin-bottom: 8px; cursor: pointer;"
-                           onclick="window.open(this.src, '_blank')">
-                      ${cleanText ? `<div class="message-text">${escapeHtml(cleanText)}</div>` : ''}
+                           style="max-width: 250px; max-height: 250px; border-radius: 12px; display: block; cursor: pointer;"
+                           onclick="openImageModal('${imageUrl}', '${safeFileName}')">
                     </div>`;
                 } else if (hasFile) {
                   const cleanText = cleanTextForFile(msg.text || '');
@@ -1556,10 +1765,17 @@
             const ticksClass = isRead ? 'ticks read' : 'ticks';
             // Detecta PDF/anexo por metadado do backend
             const hasFile = !!msg.fileId;
-            const isPdf = hasFile && String(msg.fileType || '').includes('pdf');
-            const isImage = hasFile && String(msg.fileType || '').startsWith('image/');
-            const isQrCode = isImage && (msg.fileName?.toLowerCase().includes('qrcode') || msg.text?.includes('QRCode'));
+            const fileType = String(msg.fileType || '').toLowerCase();
             const fileName = msg.fileName || 'arquivo.pdf';
+            const fileNameLower = fileName.toLowerCase();
+            // Detecta imagem pelo fileType OU pelo nome do arquivo OU pelo texto '[imagem]'
+            const isImage = hasFile && (
+              fileType.startsWith('image/') || 
+              fileNameLower.match(/\.(jpg|jpeg|png|gif|webp|bmp|svg)$/i) ||
+              msg.text === '[imagem]'
+            );
+            const isPdf = hasFile && (fileType.includes('pdf') || fileNameLower.endsWith('.pdf'));
+            const isQrCode = isImage && (fileNameLower.includes('qrcode') || msg.text?.includes('QRCode'));
             
             // Função para limpar base64 do texto quando há arquivo
             const cleanTextForFile = (text) => {
@@ -1617,15 +1833,15 @@
                   ${cleanText && cleanText !== '[arquivo]' && cleanText.length > 3 ? `<div class="message-text" style="margin-top: 8px;">${escapeHtml(cleanText)}</div>` : ''}
                 </div>`;
             } else if (isQrCode || isImage) {
-              // Renderiza QR code/imagem como imagem
-              const cleanText = cleanTextForFile(msg.text || '');
+              // Renderiza apenas a imagem, SEM texto abaixo
+              const imageUrl = `/api/files/${encodeURIComponent(msg.fileId)}`;
+              const safeFileName = escapeHtml(fileName).replace(/'/g, "&#39;");
               contentHtml = `
                 <div class="image-message">
-                  <img src="/api/files/${encodeURIComponent(msg.fileId)}" 
+                  <img src="${imageUrl}" 
                        alt="${escapeHtml(fileName)}" 
-                       style="max-width: 250px; max-height: 250px; border-radius: 12px; display: block; margin-bottom: 8px; cursor: pointer;"
-                       onclick="window.open(this.src, '_blank')">
-                  ${cleanText ? `<div class="message-text">${escapeHtml(cleanText)}</div>` : ''}
+                       style="max-width: 250px; max-height: 250px; border-radius: 12px; display: block; cursor: pointer;"
+                       onclick="openImageModal('${imageUrl}', '${safeFileName}')">
                 </div>`;
             } else if (hasFile) {
               const cleanText = cleanTextForFile(msg.text || '');
@@ -2215,6 +2431,47 @@
         button.textContent = '▶️';
       }
     }
+    
+    // Função para abrir modal de imagem
+    function openImageModal(imageUrl, fileName) {
+      const modal = document.getElementById('imageModal');
+      const img = document.getElementById('imageModalImg');
+      const downloadLink = document.getElementById('imageModalDownload');
+      
+      img.src = imageUrl;
+      img.alt = fileName || 'Imagem';
+      downloadLink.href = imageUrl;
+      downloadLink.download = fileName || 'imagem.jpg';
+      
+      modal.classList.add('active');
+      document.body.style.overflow = 'hidden'; // Previne scroll do body
+    }
+    
+    // Função para fechar modal de imagem
+    function closeImageModal() {
+      const modal = document.getElementById('imageModal');
+      modal.classList.remove('active');
+      document.body.style.overflow = ''; // Restaura scroll do body
+    }
+    
+    // Event listeners do modal
+    document.getElementById('imageModalClose').addEventListener('click', closeImageModal);
+    document.getElementById('imageModal').addEventListener('click', (e) => {
+      // Fecha se clicar fora da imagem
+      if (e.target.id === 'imageModal') {
+        closeImageModal();
+      }
+    });
+    
+    // Fecha modal com ESC
+    document.addEventListener('keydown', (e) => {
+      if (e.key === 'Escape') {
+        const modal = document.getElementById('imageModal');
+        if (modal.classList.contains('active')) {
+          closeImageModal();
+        }
+      }
+    });
 
     // Event listeners
     document.getElementById('markRead').addEventListener('click', markRead);
@@ -2227,6 +2484,138 @@
     document.getElementById('sendAudio').addEventListener('click', sendRecordedAudio);
     document.getElementById('cancelAudio').addEventListener('click', cancelRecording);
     document.getElementById('menuToggle').addEventListener('click', toggleSidebar);
+    
+    // Menu de anexos
+    const attachBtn = document.getElementById('attachBtn');
+    const attachMenu = document.getElementById('attachMenu');
+    const attachImageBtn = document.getElementById('attachImageBtn');
+    const attachFileBtn = document.getElementById('attachFileBtn');
+    
+    // Mostra/esconde menu ao clicar no botão de anexo
+    attachBtn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      const isVisible = attachMenu.style.display === 'block';
+      attachMenu.style.display = isVisible ? 'none' : 'block';
+    });
+    
+    // Fecha menu ao clicar fora
+    document.addEventListener('click', (e) => {
+      if (!attachBtn.contains(e.target) && !attachMenu.contains(e.target)) {
+        attachMenu.style.display = 'none';
+      }
+    });
+    
+    // Opção de imagem no menu
+    attachImageBtn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      attachMenu.style.display = 'none';
+      document.getElementById('imageInput').click();
+    });
+    
+    // Opção de arquivo no menu
+    attachFileBtn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      attachMenu.style.display = 'none';
+      document.getElementById('fileInput').click();
+    });
+    
+    // Enviar imagem
+    document.getElementById('imageInput').addEventListener('change', async (e) => {
+      const file = e.target.files[0];
+      if (!file) return;
+      
+      if (!currentChatId) {
+        alert('Selecione uma conversa primeiro');
+        return;
+      }
+      
+      // Verifica tamanho (máximo 16MB)
+      if (file.size > 16 * 1024 * 1024) {
+        alert('Arquivo muito grande. Máximo 16MB.');
+        e.target.value = '';
+        return;
+      }
+      
+      const formData = new FormData();
+      formData.append('image', file);
+      
+      const originalText = attachBtn.innerHTML;
+      attachBtn.innerHTML = '⏳';
+      attachBtn.disabled = true;
+      
+      try {
+        const response = await fetch(`/api/chats/${encodeURIComponent(currentChatId)}/send-image`, {
+          method: 'POST',
+          body: formData
+        });
+        
+        if (!response.ok) {
+          const error = await response.json();
+          throw new Error(error.error || 'Erro ao enviar imagem');
+        }
+        
+        // Aguarda um pouco para garantir que foi salva no banco
+        await new Promise(resolve => setTimeout(resolve, 500));
+        
+        // Recarrega mensagens (NÃO silencioso para garantir renderização)
+        await loadMessages(false);
+        
+        // Recarrega lista de conversas para atualizar preview
+        await loadChats(true);
+        
+        e.target.value = '';
+      } catch (e) {
+        alert('Erro ao enviar imagem: ' + e.message);
+      } finally {
+        attachBtn.innerHTML = originalText;
+        attachBtn.disabled = false;
+      }
+    });
+    
+    // Enviar arquivo
+    document.getElementById('fileInput').addEventListener('change', async (e) => {
+      const file = e.target.files[0];
+      if (!file) return;
+      
+      if (!currentChatId) {
+        alert('Selecione uma conversa primeiro');
+        return;
+      }
+      
+      // Verifica tamanho (máximo 16MB)
+      if (file.size > 16 * 1024 * 1024) {
+        alert('Arquivo muito grande. Máximo 16MB.');
+        e.target.value = '';
+        return;
+      }
+      
+      const formData = new FormData();
+      formData.append('file', file);
+      
+      const originalText = attachBtn.innerHTML;
+      attachBtn.innerHTML = '⏳';
+      attachBtn.disabled = true;
+      
+      try {
+        const response = await fetch(`/api/chats/${encodeURIComponent(currentChatId)}/send-file`, {
+          method: 'POST',
+          body: formData
+        });
+        
+        if (!response.ok) {
+          const error = await response.json();
+          throw new Error(error.error || 'Erro ao enviar arquivo');
+        }
+        
+        await loadMessages(false);
+        e.target.value = '';
+      } catch (e) {
+        alert('Erro ao enviar arquivo: ' + e.message);
+      } finally {
+        attachBtn.innerHTML = originalText;
+        attachBtn.disabled = false;
+      }
+    });
     
     // Verifica se está em contexto seguro (HTTPS ou localhost) para habilitar gravação de áudio
     (function checkAudioSupport() {

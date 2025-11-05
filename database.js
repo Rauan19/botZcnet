@@ -122,8 +122,10 @@ class DatabaseStore {
         const messageId = `${chatId}:out:${timestamp}`;
         
         // Dedupe de salvamento: evita salvar saídas idênticas muito recentes
+        // MAS não aplica dedupe se a mensagem tem arquivo/anexo (fileId, audioId)
+        // pois mesmo que o texto seja igual, são mensagens diferentes
         try {
-            if (this.hasSimilarRecentOutgoing(chatId, text, 5000)) {
+            if (!fileId && !audioId && this.hasSimilarRecentOutgoing(chatId, text, 5000)) {
                 return { id: messageId, direction: 'out', sender: 'bot', text, timestamp };
             }
         } catch (_) {}

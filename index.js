@@ -148,13 +148,31 @@ class App {
                 }
             });
             
-            // Configuração do multer para upload de áudio
+            // Configuração do multer para upload de áudio, imagens e arquivos
             const uploadDir = path.join(__dirname, 'temp_audio');
             if (!fs.existsSync(uploadDir)) {
                 fs.mkdirSync(uploadDir, { recursive: true });
             }
             
             const upload = multer({
+                dest: uploadDir,
+                limits: { fileSize: 16 * 1024 * 1024 } // 16MB
+            });
+            
+            const uploadImage = multer({
+                dest: uploadDir,
+                limits: { fileSize: 16 * 1024 * 1024 }, // 16MB
+                fileFilter: (req, file, cb) => {
+                    // Aceita apenas imagens
+                    if (file.mimetype.startsWith('image/')) {
+                        cb(null, true);
+                    } else {
+                        cb(new Error('Apenas imagens são permitidas'));
+                    }
+                }
+            });
+            
+            const uploadFile = multer({
                 dest: uploadDir,
                 limits: { fileSize: 16 * 1024 * 1024 } // 16MB
             });
@@ -435,6 +453,162 @@ class App {
                     res.json({ ok: true, messageId: result?.id || null });
                 } catch (e) {
                     console.error('❌ Erro ao enviar áudio:', e);
+                    res.status(500).json({ error: e.message || 'internal_error' });
+                }
+            });
+
+            // API: enviar imagem
+            app.post('/api/chats/:id/send-image', uploadImage.single('image'), async (req, res) => {
+                try {
+                    const chatId = req.params.id;
+                    const file = req.file;
+
+                    if (!file) {
+                        return res.status(400).json({ error: 'Nenhuma imagem enviada' });
+                    }
+
+                    // IMPORTANTE: Marca bot como pausado quando atendente envia imagem pelo painel
+                    const wasPaused = this.bot.isBotPausedForChat(chatId);
+                    if (!wasPaused) {
+                        this.bot.pauseBotForChat(chatId);
+                        messageStore.setBotPaused(chatId, true);
+                        console.log(`⏸️ Bot pausado automaticamente para ${chatId} (atendente enviou imagem)`);
+                    }
+                    
+                    // Atualiza timestamp da última mensagem do atendente
+                    const timestamp = Date.now();
+                    messageStore.updateLastAttendantMessage(chatId, timestamp);
+
+                    // Determina extensão do arquivo
+                    const ext = path.extname(file.originalname || '') || '.jpg';
+                    const fileName = `imagem_${Date.now()}${ext}`;
+                    const finalPath = path.join(uploadDir, fileName);
+                    
+                    // Move arquivo para nome final
+                    fs.renameSync(file.path, finalPath);
+
+                    // Salva a imagem para exibição no painel ANTES de enviar
+                    const filesDir = path.join(__dirname, 'files');
+                    if (!fs.existsSync(filesDir)) {
+                        fs.mkdirSync(filesDir, { recursive: true });
+                    }
+                    const fileId = `imagem_${Date.now()}_${Math.random().toString(36).slice(2)}${ext}`;
+                    const destPath = path.join(filesDir, fileId);
+                    
+                    // Copia arquivo ANTES de enviar e salvar no banco
+                    fs.copyFileSync(finalPath, destPath);
+                    
+                    // Verifica se arquivo foi copiado corretamente
+                    if (!fs.existsSync(destPath)) {
+                        throw new Error('Erro ao copiar arquivo para diretório files');
+                    }
+                    
+                    // Registra mensagem no banco ANTES de enviar (para garantir que aparece no painel)
+                    const fileMimetype = file.mimetype || 'image/jpeg';
+                    console.log('📸 Salvando imagem no banco:', {
+                        chatId,
+                        fileId,
+                        fileName,
+                        fileType: fileMimetype,
+                        timestamp,
+                        fileExists: fs.existsSync(destPath)
+                    });
+                    
+                    messageStore.recordOutgoingMessage({
+                        chatId: chatId,
+                        text: '[imagem]',
+                        timestamp: timestamp,
+                        fileId: fileId,
+                        fileName: fileName,
+                        fileType: fileMimetype,
+                        isAttendant: true
+                    });
+                    
+                    console.log('✅ Imagem salva no banco com sucesso');
+                    
+                    // Envia imagem pelo bot DEPOIS de salvar no banco
+                    await this.bot.sendKeepingUnread(
+                        () => this.bot.client.sendImage(chatId, finalPath, fileName, ''),
+                        chatId,
+                        '[imagem]'
+                    );
+                    
+                    // Remove arquivo temporário
+                    try {
+                        if (fs.existsSync(finalPath)) fs.unlinkSync(finalPath);
+                    } catch (e) {}
+
+                    res.json({ ok: true });
+                } catch (e) {
+                    console.error('❌ Erro ao enviar imagem:', e);
+                    res.status(500).json({ error: e.message || 'internal_error' });
+                }
+            });
+
+            // API: enviar arquivo
+            app.post('/api/chats/:id/send-file', uploadFile.single('file'), async (req, res) => {
+                try {
+                    const chatId = req.params.id;
+                    const file = req.file;
+
+                    if (!file) {
+                        return res.status(400).json({ error: 'Nenhum arquivo enviado' });
+                    }
+
+                    // IMPORTANTE: Marca bot como pausado quando atendente envia arquivo pelo painel
+                    const wasPaused = this.bot.isBotPausedForChat(chatId);
+                    if (!wasPaused) {
+                        this.bot.pauseBotForChat(chatId);
+                        messageStore.setBotPaused(chatId, true);
+                        console.log(`⏸️ Bot pausado automaticamente para ${chatId} (atendente enviou arquivo)`);
+                    }
+                    
+                    // Atualiza timestamp da última mensagem do atendente
+                    const timestamp = Date.now();
+                    messageStore.updateLastAttendantMessage(chatId, timestamp);
+
+                    // Usa nome original do arquivo ou gera um
+                    const fileName = file.originalname || `arquivo_${Date.now()}`;
+                    const finalPath = path.join(uploadDir, fileName);
+                    
+                    // Move arquivo para nome final
+                    fs.renameSync(file.path, finalPath);
+
+                    // Envia arquivo pelo bot
+                    await this.bot.sendKeepingUnread(
+                        () => this.bot.client.sendFile(chatId, finalPath, fileName, ''),
+                        chatId,
+                        '[arquivo]'
+                    );
+                    
+                    // Salva o arquivo para exibição no painel
+                    const filesDir = path.join(__dirname, 'files');
+                    if (!fs.existsSync(filesDir)) {
+                        fs.mkdirSync(filesDir, { recursive: true });
+                    }
+                    const fileId = `arquivo_${Date.now()}_${Math.random().toString(36).slice(2)}_${fileName}`;
+                    const destPath = path.join(filesDir, fileId);
+                    fs.copyFileSync(finalPath, destPath);
+                    
+                    // Registra mensagem enviada com o ID do arquivo (como do atendente)
+                    messageStore.recordOutgoingMessage({
+                        chatId: chatId,
+                        text: '[arquivo]',
+                        timestamp: timestamp,
+                        fileId: fileId,
+                        fileName: fileName,
+                        fileType: file.mimetype || 'application/octet-stream',
+                        isAttendant: true
+                    });
+                    
+                    // Remove arquivo temporário
+                    try {
+                        if (fs.existsSync(finalPath)) fs.unlinkSync(finalPath);
+                    } catch (e) {}
+
+                    res.json({ ok: true });
+                } catch (e) {
+                    console.error('❌ Erro ao enviar arquivo:', e);
                     res.status(500).json({ error: e.message || 'internal_error' });
                 }
             });

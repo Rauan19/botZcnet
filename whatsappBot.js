@@ -336,6 +336,12 @@ class WhatsAppBot {
                              (message.type === 'document' && message.mimetype && message.mimetype.includes('pdf')) ||
                              (message.type === 'document' && message.fileName && message.fileName.toLowerCase().endsWith('.pdf'));
                 
+                // Detecta se é imagem recebida
+                const isImage = (message.mimetype && message.mimetype.startsWith('image/')) ||
+                               (message.type === 'image') ||
+                               (message.type === 'sticker') ||
+                               (message.hasMedia && message.mimetype && message.mimetype.startsWith('image/'));
+                
                 if (isAudio && !message.fromMe) {
                     clientSentAudio = true; // Cliente enviou áudio
                     // Cliente enviou áudio - transcreve para texto e salva arquivo
@@ -439,6 +445,81 @@ class WhatsAppBot {
                     }
                 }
                 
+                // Processa imagem recebida
+                if (isImage && !message.fromMe) {
+                    console.log('🖼️ Imagem recebida do cliente');
+                    try {
+                        // Tenta fazer download da imagem
+                        const messageId = message.id || message._serialized || message.timestamp;
+                        let media = null;
+                        
+                        try {
+                            media = await client.downloadMedia(messageId);
+                        } catch (e) {
+                            console.warn('⚠️ Erro ao fazer download da imagem:', e.message);
+                            // Tenta usar dados da mensagem se disponíveis
+                            if (message.mediaData) {
+                                media = message.mediaData;
+                            }
+                        }
+                        
+                        if (media) {
+                            // Salva imagem no diretório files
+                            const filesDir = path.join(__dirname, 'files');
+                            if (!fs.existsSync(filesDir)) fs.mkdirSync(filesDir, { recursive: true });
+                            
+                            let imageData = media.data || media;
+                            let mimetype = media.mimetype || message.mimetype || 'image/jpeg';
+                            
+                            // Remove prefixo data URL se existir
+                            if (typeof imageData === 'string' && imageData.includes(',')) {
+                                imageData = imageData.split(',')[1];
+                            }
+                            
+                            // Determina extensão do arquivo baseado no mimetype
+                            let extension = 'jpg';
+                            if (mimetype.includes('png')) extension = 'png';
+                            else if (mimetype.includes('gif')) extension = 'gif';
+                            else if (mimetype.includes('webp')) extension = 'webp';
+                            
+                            const fileId = `imagem_${Date.now()}_${Math.random().toString(36).slice(2)}.${extension}`;
+                            const destPath = path.join(filesDir, fileId);
+                            fs.writeFileSync(destPath, Buffer.from(imageData, 'base64'));
+                            
+                            const fileName = message.fileName || message.name || `imagem.${extension}`;
+                            
+                            // Para imagens, sempre salva apenas '[imagem]' como texto, sem mostrar código base64
+                            // Isso garante que apenas a imagem seja exibida no painel, sem texto abaixo
+                            const cleanText = '[imagem]';
+                            
+                            // Salva imagem no banco de dados
+                            try {
+                                messageStore.recordIncomingMessage({ 
+                                    chatId: message.from, 
+                                    sender: message.from, 
+                                    text: cleanText, 
+                                    timestamp: Date.now(), 
+                                    name: message.sender?.pushname || '',
+                                    fileId: fileId,
+                                    fileName: fileName,
+                                    fileType: mimetype
+                                });
+                            } catch (e) {
+                                console.error('❌ Erro ao salvar imagem no banco:', e);
+                            }
+                            
+                            // Se o cliente enviou apenas imagem sem texto legível, não precisa pausar bot
+                            // Imagem pode ser comprovante ou outra coisa, deixa atendente processar se necessário
+                            
+                            // IMPORTANTE: Retorna aqui para não processar o body como mensagem de texto
+                            // Isso evita que o base64 seja salvo como mensagem separada
+                            return;
+                        }
+                    } catch (e) {
+                        console.error('❌ Erro ao processar imagem:', e);
+                    }
+                }
+                
                 // Processa PDF recebido
                 if (isPdf && !message.fromMe) {
                     console.log('📄 PDF recebido do cliente');
@@ -521,8 +602,19 @@ class WhatsAppBot {
                 }
                 
                 console.log(`📩 Mensagem recebida de ${message.from}: ${finalBody || '[sem texto]'}`);
-                // Registrar no painel (incrementa não lidas) - só se não for áudio (já registrado acima) e não for PDF (já registrado acima)
-                if ((!isAudio || finalBody === '[áudio]') && !isPdf) {
+                
+                // Verifica se o body contém apenas base64 (caso a imagem tenha sido processada mas o body ainda contenha base64)
+                const isBase64Only = body && body.trim().length > 100 && /^[A-Za-z0-9+\/=\s]+$/.test(body.trim()) && 
+                                     !body.includes(' ') && body.length > 200;
+                
+                // Se for imagem processada ou body contém apenas base64, ignora processamento adicional
+                if (isImage || isBase64Only) {
+                    console.log('📸 Mensagem de imagem processada - ignorando body com base64');
+                    return;
+                }
+                
+                // Registrar no painel (incrementa não lidas) - só se não for áudio (já registrado acima), não for PDF (já registrado acima) e não for imagem (já registrado acima)
+                if ((!isAudio || finalBody === '[áudio]') && !isPdf && !isImage) {
                     try { messageStore.recordIncomingMessage({ chatId: message.from, sender: message.from, text: finalBody, timestamp: Date.now(), name: message.sender?.pushname || '' }); } catch (_) {}
                 }
                 
