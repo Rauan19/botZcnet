@@ -899,6 +899,58 @@ class App {
                 }
             });
 
+            // API: reconectar websocket
+            app.post('/api/websocket/reconnect', async (req, res) => {
+                try {
+                    const result = await this.bot.reconnect();
+                    if (result.success) {
+                        return res.json({ 
+                            ok: true, 
+                            message: result.message,
+                            reconnected: result.reconnected 
+                        });
+                    } else {
+                        return res.status(500).json({ 
+                            ok: false, 
+                            error: result.message || 'Falha ao reconectar' 
+                        });
+                    }
+                } catch (e) {
+                    console.error('❌ Erro ao reconectar websocket:', e);
+                    return res.status(500).json({ error: 'internal_error', message: e.message });
+                }
+            });
+
+            // API: pausar websocket
+            app.post('/api/websocket/pause', async (req, res) => {
+                try {
+                    const result = await this.bot.pause();
+                    if (result.success) {
+                        return res.json({ ok: true, message: result.message });
+                    } else {
+                        return res.status(500).json({ ok: false, error: result.message || 'Falha ao pausar' });
+                    }
+                } catch (e) {
+                    console.error('❌ Erro ao pausar websocket:', e);
+                    return res.status(500).json({ error: 'internal_error', message: e.message });
+                }
+            });
+
+            // API: retomar websocket
+            app.post('/api/websocket/resume', async (req, res) => {
+                try {
+                    const result = await this.bot.resume();
+                    if (result.success) {
+                        return res.json({ ok: true, message: result.message });
+                    } else {
+                        return res.status(500).json({ ok: false, error: result.message || 'Falha ao retomar' });
+                    }
+                } catch (e) {
+                    console.error('❌ Erro ao retomar websocket:', e);
+                    return res.status(500).json({ error: 'internal_error', message: e.message });
+                }
+            });
+
             app.listen(PORT, () => {
                 console.log(`📊 Painel iniciado em http://localhost:${PORT}`);
             });

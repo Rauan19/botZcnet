@@ -96,8 +96,9 @@
     /* Main Layout */
     .main-content {
       display: flex;
-      height: 100vh;
-      padding-top: 60px;
+      height: calc(100vh - 60px);
+      margin-top: 60px;
+      width: 100%;
     }
     
     .sidebar { 
@@ -107,6 +108,7 @@
       display: flex;
       flex-direction: column;
       backdrop-filter: blur(10px);
+      height: 100%;
     }
     
     .chat-area { 
@@ -114,6 +116,8 @@
       display: flex;
       flex-direction: column;
       background: rgba(30, 41, 59, 0.3);
+      height: 100%;
+      min-width: 0;
     }
     
     /* Sidebar Content */
@@ -142,6 +146,120 @@
     
     .search-box::placeholder {
       color: #94a3b8;
+    }
+    
+    .refresh-button {
+      width: 100%;
+      padding: 14px 18px;
+      background: linear-gradient(135deg, #10b981, #059669);
+      color: white;
+      border: 3px solid #00ff88;
+      border-radius: 12px;
+      font-size: 15px;
+      font-weight: 800;
+      cursor: pointer;
+      transition: all 0.3s;
+      margin-bottom: 12px;
+      box-shadow: 
+        0 0 20px rgba(0, 255, 136, 0.4),
+        0 0 40px rgba(0, 255, 136, 0.2),
+        0 4px 15px rgba(0, 0, 0, 0.3),
+        inset 0 1px 0 rgba(255, 255, 255, 0.2);
+      text-transform: uppercase;
+      letter-spacing: 1px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 10px;
+      position: relative;
+      overflow: hidden;
+      animation: borderGlow 2s ease-in-out infinite;
+    }
+    
+    .refresh-button::before {
+      content: '';
+      position: absolute;
+      top: -50%;
+      left: -50%;
+      width: 200%;
+      height: 200%;
+      background: linear-gradient(45deg, transparent, rgba(255, 255, 255, 0.1), transparent);
+      transform: rotate(45deg);
+      animation: shine 3s infinite;
+    }
+    
+    @keyframes borderGlow {
+      0%, 100% {
+        border-color: #00ff88;
+        box-shadow: 
+          0 0 20px rgba(0, 255, 136, 0.4),
+          0 0 40px rgba(0, 255, 136, 0.2),
+          0 4px 15px rgba(0, 0, 0, 0.3),
+          inset 0 1px 0 rgba(255, 255, 255, 0.2);
+      }
+      50% {
+        border-color: #00ffaa;
+        box-shadow: 
+          0 0 30px rgba(0, 255, 170, 0.6),
+          0 0 60px rgba(0, 255, 170, 0.3),
+          0 4px 15px rgba(0, 0, 0, 0.3),
+          inset 0 1px 0 rgba(255, 255, 255, 0.2);
+      }
+    }
+    
+    @keyframes shine {
+      0% {
+        transform: translateX(-100%) translateY(-100%) rotate(45deg);
+      }
+      100% {
+        transform: translateX(100%) translateY(100%) rotate(45deg);
+      }
+    }
+    
+    .refresh-button:hover {
+      background: linear-gradient(135deg, #059669, #047857);
+      transform: translateY(-3px) scale(1.02);
+      border-color: #00ffaa;
+      box-shadow: 
+        0 0 35px rgba(0, 255, 170, 0.7),
+        0 0 70px rgba(0, 255, 170, 0.4),
+        0 8px 25px rgba(0, 0, 0, 0.4),
+        inset 0 1px 0 rgba(255, 255, 255, 0.3);
+    }
+    
+    .refresh-button:active {
+      transform: translateY(-1px) scale(0.98);
+      box-shadow: 
+        0 0 15px rgba(0, 255, 136, 0.5),
+        0 0 30px rgba(0, 255, 136, 0.3),
+        0 2px 10px rgba(0, 0, 0, 0.3),
+        inset 0 1px 0 rgba(255, 255, 255, 0.2);
+    }
+    
+    .refresh-button:disabled {
+      opacity: 0.6;
+      cursor: not-allowed;
+      transform: none;
+    }
+    
+    .refresh-button .refresh-icon,
+    .refresh-button span:not(.refresh-icon) {
+      position: relative;
+      z-index: 1;
+    }
+    
+    .refresh-button .refresh-icon {
+      font-size: 16px;
+      animation: none;
+    }
+    
+    .refresh-button.loading .refresh-icon {
+      animation: spin 1s linear infinite;
+    }
+    
+    @keyframes spin {
+      from { transform: rotate(0deg); }
+      to { transform: rotate(360deg); }
     }
     
     .chats-list {
@@ -303,6 +421,7 @@
       display: flex;
       flex-direction: column;
       position: relative;
+      min-height: 0;
     }
     
     .message { 
@@ -1314,6 +1433,10 @@
     <div class="main-content">
       <aside class="sidebar">
         <div class="sidebar-header">
+          <button class="refresh-button" id="refreshButton" onclick="refreshMessages()">
+            <span class="refresh-icon">🔄</span>
+            <span>Atualizar para ver mensagens recentes</span>
+          </button>
           <input type="text" class="search-box" placeholder="🔍 Buscar conversas..." id="searchInput">
         </div>
         
@@ -1657,6 +1780,79 @@
           loadStats();
         }
       }, 10000);
+    }
+
+    // Função para atualizar mensagens recentes (botão de refresh)
+    async function refreshMessages() {
+      const refreshBtn = document.getElementById('refreshButton');
+      if (!refreshBtn || !isAuthenticated) return;
+      
+      // Desabilita botão e mostra loading
+      refreshBtn.disabled = true;
+      refreshBtn.classList.add('loading');
+      
+      try {
+        // PRIMEIRO: Reconecta o websocket
+        const reconnectResponse = await fetchJSON('/api/websocket/reconnect', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' }
+        });
+        
+        if (!reconnectResponse.ok) {
+          throw new Error(reconnectResponse.error || 'Falha ao reconectar websocket');
+        }
+        
+        // Aguarda um pouco para o websocket estabilizar
+        await new Promise(resolve => setTimeout(resolve, 2000));
+        
+        // DEPOIS: Atualiza chats e mensagens
+        await Promise.all([
+          loadChats(false), // Não silencioso para forçar atualização
+          loadStats()
+        ]);
+        
+        // Se tiver chat aberto, atualiza mensagens também
+        if (currentChatId) {
+          await loadMessages(false); // Não silencioso para forçar atualização
+          await loadBotStatus();
+        }
+        
+        // Feedback visual de sucesso
+        const textSpan = refreshBtn.querySelector('span:last-child');
+        if (textSpan) {
+          const originalText = textSpan.textContent;
+          const reconnected = reconnectResponse.reconnected;
+          textSpan.textContent = reconnected ? '✓ Websocket reconectado!' : '✓ Atualizado!';
+          refreshBtn.style.background = 'linear-gradient(135deg, #16a34a, #15803d)';
+          
+          setTimeout(() => {
+            textSpan.textContent = originalText;
+            refreshBtn.style.background = '';
+          }, 3000);
+        }
+        
+      } catch (error) {
+        console.error('Erro ao reconectar websocket e atualizar mensagens:', error);
+        
+        // Feedback visual de erro
+        const textSpan = refreshBtn.querySelector('span:last-child');
+        if (textSpan) {
+          const originalText = textSpan.textContent;
+          textSpan.textContent = '✗ Erro ao reconectar';
+          refreshBtn.style.background = 'linear-gradient(135deg, #ef4444, #dc2626)';
+          
+          setTimeout(() => {
+            textSpan.textContent = originalText;
+            refreshBtn.style.background = '';
+          }, 3000);
+        }
+      } finally {
+        // Reabilita botão após 2 segundos
+        setTimeout(() => {
+          refreshBtn.disabled = false;
+          refreshBtn.classList.remove('loading');
+        }, 2000);
+      }
     }
 
     function formatTime(ts) {

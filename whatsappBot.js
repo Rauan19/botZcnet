@@ -2181,9 +2181,59 @@ Para gerar seu boleto ou PIX, envie seu *CPF* (somente números)
                 const connected = await client.isConnected();
                 if (!connected) {
                     console.log(`⚠️ Conexão perdida! isConnected: ${connected}`);
+                    // Tenta reconectar automaticamente
+                    try {
+                        console.log('🔄 Tentando reconectar automaticamente...');
+                        await this.reconnect();
+                    } catch (e) {
+                        console.error('❌ Falha na reconexão automática:', e.message);
+                    }
                 }
             } catch (e) {}
-        }, 60000); // Agora verifica a cada 1 minuto
+        }, 60000); // Verifica a cada 1 minuto
+
+        // Watchdog anti-zombie: verifica conexão real a cada 5 minutos
+        this.zombieWatchdog = setInterval(async () => {
+            try {
+                if (!this.client || !this.started) return;
+                
+                // Verifica se está conectado
+                const isConnected = await client.isConnected();
+                if (!isConnected) {
+                    console.log('🔍 Watchdog: Conexão não está ativa, reconectando...');
+                    await this.reconnect();
+                    return;
+                }
+                
+                // Testa se consegue fazer uma operação real (tenta pegar lista de chats)
+                // Se falhar, pode estar "zombie" (conectado mas não funcional)
+                try {
+                    // Usa uma operação simples que testa a conexão real
+                    // Se o método existir, tenta usar, senão apenas confia no isConnected
+                    if (typeof client.getAllChats === 'function') {
+                        await Promise.race([
+                            client.getAllChats(),
+                            new Promise((_, reject) => setTimeout(() => reject(new Error('timeout')), 10000))
+                        ]);
+                        // Se chegou aqui, a conexão está funcionando de verdade
+                        console.log('✅ Watchdog: Conexão verificada e funcionando');
+                    } else {
+                        // Se não tem o método, apenas confia no isConnected
+                        console.log('✅ Watchdog: Conexão ativa (verificação básica)');
+                    }
+                } catch (e) {
+                    // Se falhar ou der timeout, pode estar "zombie"
+                    if (e.message && e.message.includes('timeout')) {
+                        console.log('⚠️ Watchdog: Timeout ao verificar conexão (possível "zombie"), reconectando...');
+                    } else {
+                        console.log('⚠️ Watchdog: Erro ao verificar conexão (possível "zombie"), reconectando...');
+                    }
+                    await this.reconnect();
+                }
+            } catch (e) {
+                console.error('❌ Erro no watchdog anti-zombie:', e.message);
+            }
+        }, 5 * 60 * 1000); // Verifica a cada 5 minutos
     }
 
     // ===== Utilidades de parsing/validação =====
@@ -2961,6 +3011,109 @@ Copie o código COMPLETO, do início ao fim!`;
     /**
      * Encerra o bot e fecha a sessão com segurança.
      */
+    /**
+     * Reconecta o websocket se estiver desconectado
+     */
+    async reconnect() {
+        try {
+            console.log('🔄 Verificando conexão do websocket...');
+            
+            // Verifica se o cliente existe e está conectado
+            if (this.client) {
+                try {
+                    const connected = await this.client.isConnected();
+                    if (connected) {
+                        console.log('✅ Websocket já está conectado');
+                        return { success: true, message: 'Já conectado', reconnected: false };
+                    }
+                } catch (e) {
+                    console.log('⚠️ Erro ao verificar conexão:', e.message);
+                }
+            }
+            
+            console.log('🔌 Websocket desconectado. Reconectando...');
+            
+            // Para o cliente atual se existir
+            const wasStarted = this.started;
+            if (this.client || wasStarted) {
+                try {
+                    // Reseta a flag para permitir reiniciar
+                    this.started = false;
+                    await this.stop();
+                } catch (e) {
+                    console.log('⚠️ Erro ao parar cliente:', e.message);
+                    // Força reset da flag mesmo se der erro
+                    this.started = false;
+                }
+            }
+            
+            // Aguarda um pouco antes de reconectar
+            await new Promise(resolve => setTimeout(resolve, 2000));
+            
+            // Reinicia o cliente
+            await this.start();
+            
+            // Aguarda um pouco para garantir que conectou
+            await new Promise(resolve => setTimeout(resolve, 2000));
+            
+            // Verifica novamente se está conectado
+            if (this.client) {
+                try {
+                    const connected = await this.client.isConnected();
+                    if (connected) {
+                        console.log('✅ Websocket reconectado com sucesso!');
+                        return { success: true, message: 'Reconectado com sucesso', reconnected: true };
+                    }
+                } catch (e) {
+                    console.log('⚠️ Erro ao verificar reconexão:', e.message);
+                }
+            }
+            
+            return { success: false, message: 'Falha ao reconectar', reconnected: false };
+        } catch (e) {
+            console.error('❌ Erro ao reconectar websocket:', e);
+            // Garante que a flag seja resetada em caso de erro
+            this.started = false;
+            return { success: false, message: e.message || 'Erro desconhecido', reconnected: false };
+        }
+    }
+
+    /**
+     * Pausa o websocket (para o cliente)
+     */
+    async pause() {
+        try {
+            console.log('⏸️ Pausando websocket...');
+            if (this.client) {
+                await this.stop();
+                console.log('✅ Websocket pausado');
+                return { success: true, message: 'Websocket pausado' };
+            }
+            return { success: false, message: 'Cliente não está conectado' };
+        } catch (e) {
+            console.error('❌ Erro ao pausar websocket:', e);
+            return { success: false, message: e.message || 'Erro desconhecido' };
+        }
+    }
+
+    /**
+     * Retoma o websocket (reinicia o cliente)
+     */
+    async resume() {
+        try {
+            console.log('▶️ Retomando websocket...');
+            if (!this.started) {
+                await this.start();
+                console.log('✅ Websocket retomado');
+                return { success: true, message: 'Websocket retomado' };
+            }
+            return { success: false, message: 'Cliente já está ativo' };
+        } catch (e) {
+            console.error('❌ Erro ao retomar websocket:', e);
+            return { success: false, message: e.message || 'Erro desconhecido' };
+        }
+    }
+
     async stop() {
         try {
             if (this._reinjectTicker) {
@@ -2970,6 +3123,10 @@ Copie o código COMPLETO, do início ao fim!`;
             if (this.connectionTicker) {
                 clearInterval(this.connectionTicker);
                 this.connectionTicker = null;
+            }
+            if (this.zombieWatchdog) {
+                clearInterval(this.zombieWatchdog);
+                this.zombieWatchdog = null;
             }
             if (this.client) {
                 // Tenta fechar o navegador
