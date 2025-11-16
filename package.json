@@ -5,6 +5,7 @@
   "main": "index.js",
   "scripts": {
     "start": "node index.js",
+    "start:baileys": "cross-env WHATSAPP_PROVIDER=baileys node index.js",
     "dev": "cross-env WHATSAPP_PROVIDER=baileys nodemon index.js --ignore temp_audio --ignore data --ignore tokens --ignore tokens-baileys",
     "list-clients": "node listClients.js",
     "list-all-clients": "node listAllClients.js",

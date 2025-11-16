@@ -179,11 +179,7 @@ class BaileysBot {
                     continue;
                 }
 
-                // Rate limiting: máximo 1 resposta a cada 3 segundos por chat
-                if (!this.canRespond(chatId)) {
-                    console.log(`⏱️ [${chatId}] Rate limit atingido, ignorando mensagem`);
-                    continue;
-                }
+                // Rate limiting removido daqui - agora é verificado depois, permitindo seleções de menu rápidas
 
                 // Ignora mensagens muito antigas (> 5 minutos)
                 let messageTimestamp = Date.now();
@@ -211,6 +207,16 @@ class BaileysBot {
 
                 // Log detalhado para debug
                 console.log(`📩 [${chatId}] Mensagem: "${body.substring(0, 50)}" | Normalizada: "${normalized}" | Contexto: ${context.currentMenu}/${context.currentStep || 'null'}`);
+
+                // Verifica se é seleção de menu válida (1-9) - permite passar rate limiting
+                const isMenuSelection = /^[1-9]$/.test(normalized);
+                
+                // Rate limiting: NÃO aplica para seleções de menu válidas (resposta rápida)
+                // Aplica apenas para outras mensagens para evitar spam
+                if (!isMenuSelection && !this.canRespond(chatId)) {
+                    console.log(`⏱️ [${chatId}] Rate limit atingido, ignorando mensagem`);
+                    continue;
+                }
 
                 // Trata comando de menu (8) em qualquer contexto (ANTES de shouldIgnoreMessage)
                 if (this.isMenuCommand(normalized)) {
@@ -529,7 +535,7 @@ Digite o *número* da opção ou *8* para voltar ao menu.`;
             return true;
         }
         const timeSinceLastResponse = Date.now() - lastResponse;
-        return timeSinceLastResponse >= 3000; // Mínimo 3 segundos entre respostas
+        return timeSinceLastResponse >= 1000; // Mínimo 1 segundo entre respostas (reduzido de 3s para ser mais rápido)
     }
 
     recordResponse(chatId) {
@@ -783,21 +789,61 @@ Digite o número da opção ou *8* para voltar ao menu.`;
             return false;
         }
 
-        if (normalizedText === '1') {
-            await this.sendText(chatId, '🔧 *INTERNET LENTA*\n\nReinicie o roteador e aguarde 5 minutos.\n———\nDigite *8* para voltar ao menu.');
+        // Se está aguardando escolha inicial do submenu
+        if (context.currentStep === 'waiting_option') {
+            if (normalizedText === '1') {
+                await this.sendText(chatId, '🔧 *INTERNET LENTA*\n\nDesligue e ligue os equipamentos, aguarde alguns minutos e teste a conexão.\n\nSe o problema persistir, digite *3*.\n\n———\nDigite *8* para voltar ao menu.');
+                // Atualiza contexto para indicar que está dentro do submenu "INTERNET LENTA"
+                this.setConversationContext(chatId, {
+                    currentMenu: 'support_sub',
+                    currentStep: 'internet_lenta'
+                });
+                return true;
+            }
+
+            if (normalizedText === '2') {
+                await this.sendText(chatId, '🚫 *SEM CONEXÃO*\n\nVerifique cabos e energia do roteador. Caso persista, aguarde alguns minutos.\n\nPrecisa falar com suporte? Responda *3*.\n———\nDigite *8* para voltar ao menu.');
+                // Atualiza contexto para indicar que está dentro do submenu "SEM CONEXÃO"
+                this.setConversationContext(chatId, {
+                    currentMenu: 'support_sub',
+                    currentStep: 'sem_conexao'
+                });
+                return true;
+            }
+
+            if (normalizedText === '3') {
+                await this.sendText(
+                    chatId,
+                    '🧾 *JÁ PAGUEI*\n\nSe você já quitou o boleto/PIX, aguarde até 5 minutos para que o sistema atualize.\nCaso não volte em breve, nosso time entrará em contato para finalizar a liberação.\n———\nDigite *8* para voltar ao menu.'
+                );
+                // Reseta contexto após mostrar resposta
+                this.setConversationContext(chatId, {
+                    currentMenu: 'main',
+                    currentStep: null
+                });
+                return true;
+            }
+        }
+
+        // Se está dentro do submenu "SEM CONEXÃO" e cliente digita "3"
+        if (context.currentStep === 'sem_conexao' && normalizedText === '3') {
+            await this.sendText(chatId, 'Em breve um dos nossos atendentes irá continuar nosso atendimento.');
+            // Reseta contexto após mostrar resposta
+            this.setConversationContext(chatId, {
+                currentMenu: 'main',
+                currentStep: null
+            });
             return true;
         }
 
-        if (normalizedText === '2') {
-            await this.sendText(chatId, '🚫 *SEM CONEXÃO*\n\nVerifique cabos e energia do roteador. Caso persista, aguarde alguns minutos.\n\nPrecisa falar com suporte? Responda *3*.\n———\nDigite *8* para voltar ao menu.');
-            return true;
-        }
-
-        if (normalizedText === '3') {
-            await this.sendText(
-                chatId,
-                '🧾 *JÁ PAGUEI*\n\nSe você já quitou o boleto/PIX, aguarde até 5 minutos para que o sistema atualize.\nCaso não volte em breve, nosso time entrará em contato para finalizar a liberação.\n———\nDigite *8* para voltar ao menu.'
-            );
+        // Se está dentro do submenu "INTERNET LENTA" e cliente digita "3"
+        if (context.currentStep === 'internet_lenta' && normalizedText === '3') {
+            await this.sendText(chatId, 'Em breve um dos nossos atendentes irá continuar nosso atendimento.');
+            // Reseta contexto após mostrar resposta
+            this.setConversationContext(chatId, {
+                currentMenu: 'main',
+                currentStep: null
+            });
             return true;
         }
 
