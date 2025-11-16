@@ -1482,6 +1482,9 @@
             <button class="btn btn-secondary" id="toggleBot" disabled>
               🤖 Bot: Ativo
             </button>
+            <button class="btn btn-secondary" id="clearContext" disabled title="Limpar contexto do bot (útil para testes)">
+              🧹 Limpar Contexto
+            </button>
             <button class="btn btn-primary" id="markRead" disabled>
               ✓ Marcar como lido
             </button>
@@ -2006,12 +2009,14 @@
       const title = document.getElementById('chatTitle');
       const markReadBtn = document.getElementById('markRead');
       const toggleBotBtn = document.getElementById('toggleBot');
+      const clearContextBtn = document.getElementById('clearContext');
       const inputContainer = document.getElementById('messageInputContainer');
       
       header.style.display = 'flex';
       title.textContent = chat?.name || chat?.id || 'Conversa';
       markReadBtn.disabled = false;
       if (toggleBotBtn) toggleBotBtn.disabled = false;
+      if (clearContextBtn) clearContextBtn.disabled = false;
       inputContainer.style.display = 'block';
       
       // Carrega status do bot
@@ -2618,6 +2623,35 @@
       }
     }
 
+    async function clearContext() {
+      if (!currentChatId) return;
+      const btn = document.getElementById('clearContext');
+      if (!btn) return;
+      
+      if (!confirm('Deseja limpar o contexto do bot para este chat? Isso fará o bot esquecer o estado atual da conversa.')) {
+        return;
+      }
+      
+      const originalText = btn.innerHTML;
+      btn.disabled = true;
+      btn.innerHTML = '<div class="loading"></div> Limpando...';
+      
+      try {
+        const result = await fetchJSON('/api/chats/' + encodeURIComponent(currentChatId) + '/clear-context', { method: 'POST' });
+        if (result.ok) {
+          alert('✅ Contexto limpo com sucesso! O bot agora responderá como se fosse uma nova conversa.');
+        } else {
+          alert('❌ Erro ao limpar contexto: ' + (result.error || 'Erro desconhecido'));
+        }
+      } catch (e) {
+        console.error('Erro ao limpar contexto:', e);
+        alert('❌ Erro ao limpar contexto: ' + e.message);
+      } finally {
+        btn.disabled = false;
+        btn.innerHTML = originalText;
+      }
+    }
+
     async function toggleBot() {
       if (!currentChatId) return;
       const btn = document.getElementById('toggleBot');
@@ -3113,6 +3147,7 @@
     // Event listeners
     document.getElementById('markRead').addEventListener('click', markRead);
     document.getElementById('toggleBot').addEventListener('click', toggleBot);
+    document.getElementById('clearContext').addEventListener('click', clearContext);
     document.getElementById('searchInput').addEventListener('input', (e) => {
       filterChats(e.target.value);
     });

@@ -12,6 +12,16 @@ if (!fs.existsSync(DB_DIR)) {
 
 const db = new Database(DB_PATH);
 
+const normalizeValue = (value) => {
+    if (value === undefined || value === null) return null;
+    if (typeof value === 'object') {
+        if (value._serialized) return value._serialized;
+        if (value.id) return value.id;
+        try { return JSON.stringify(value); } catch (_) { return String(value); }
+    }
+    return value;
+};
+
 // Inicializa as tabelas
 try {
     db.exec(`
@@ -100,10 +110,20 @@ class DatabaseStore {
         
         // Insere mensagem
         const msgStmt = db.prepare(`
-            INSERT INTO messages (id, chat_id, direction, content, timestamp, audio_id, file_id, file_name, file_type)
-            VALUES (?, ?, 'in', ?, ?, ?, ?, ?, ?)
+            INSERT INTO messages (id, chat_id, direction, content, timestamp, file_id, file_name, file_type, audio_id)
+            VALUES (@id, @chat_id, @direction, @content, @timestamp, @file_id, @file_name, @file_type, @audio_id)
         `);
-        msgStmt.run(messageId, chatId, text || '', timestamp, audioId || null, fileId || null, fileName || null, fileType || null);
+        msgStmt.run({
+            id: messageId,
+            chat_id: chatId,
+            direction: 'in',
+            content: text || '',
+            timestamp,
+            file_id: normalizeValue(fileId),
+            file_name: normalizeValue(fileName),
+            file_type: normalizeValue(fileType),
+            audio_id: normalizeValue(audioId)
+        });
         
         // Atualiza contador e última mensagem
         const updateStmt = db.prepare(`
@@ -134,11 +154,31 @@ class DatabaseStore {
         try { this.upsertChat(chatId); } catch (_) {}
         
         // Insere mensagem
+        const normalizeValue = (value) => {
+            if (value === undefined || value === null) return null;
+            if (typeof value === 'object') {
+                if (value._serialized) return value._serialized;
+                if (value.id) return value.id;
+                try { return JSON.stringify(value); } catch (_) { return String(value); }
+            }
+            return value;
+        };
+
         const msgStmt = db.prepare(`
-            INSERT INTO messages (id, chat_id, direction, content, timestamp, audio_id, file_id, file_name, file_type)
-            VALUES (?, ?, 'out', ?, ?, ?, ?, ?, ?)
+            INSERT INTO messages (id, chat_id, direction, content, timestamp, file_id, file_name, file_type, audio_id)
+            VALUES (@id, @chat_id, @direction, @content, @timestamp, @file_id, @file_name, @file_type, @audio_id)
         `);
-        msgStmt.run(messageId, chatId, text || '', timestamp, audioId || null, fileId || null, fileName || null, fileType || null);
+        msgStmt.run({
+            id: messageId,
+            chat_id: chatId,
+            direction: 'out',
+            content: text || '',
+            timestamp,
+            file_id: normalizeValue(fileId),
+            file_name: normalizeValue(fileName),
+            file_type: normalizeValue(fileType),
+            audio_id: normalizeValue(audioId)
+        });
         
         // Atualiza última mensagem e marca como mensagem do atendente apenas se for do atendente
         if (isAttendant) {

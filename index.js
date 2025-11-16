@@ -1,4 +1,5 @@
 const WhatsAppBot = require('./whatsappBot');
+const BaileysBot = require('./baileysBot');
 const zcBillService = require('./services/zcBillService');
 const zcClientService = require('./services/zcClientService');
 const express = require('express');
@@ -7,9 +8,8 @@ const messageStore = require('./database'); // Carrega e inicializa o banco
 const multer = require('multer');
 const fs = require('fs');
 const https = require('https');
-const ffmpeg = require('fluent-ffmpeg');
-const ffmpegStatic = require('ffmpeg-static');
 const crypto = require('crypto');
+const { convertToOpus, sendPTT } = require('./voice');
 
 // Configuração de limpeza automática de arquivos PDF antigos
 const CLEANUP_INTERVAL = 30 * 60 * 1000; // 30 minutos
@@ -76,7 +76,7 @@ function validateToken(token) {
 // Middleware de autenticação
 function authenticateToken(req, res, next) {
     // Rotas públicas não precisam de autenticação
-    const publicRoutes = ['/api/auth/login', '/api/auth/verify', '/'];
+    const publicRoutes = ['/api/auth/login', '/api/auth/verify', '/', '/api/session/qr', '/favicon.ico'];
     if (publicRoutes.includes(req.path)) {
         return next();
     }
@@ -107,14 +107,12 @@ function authenticateToken(req, res, next) {
     next();
 }
 
-// Configura FFmpeg
-if (ffmpegStatic) {
-    ffmpeg.setFfmpegPath(ffmpegStatic);
-}
-
 class App {
     constructor() {
-        this.bot = new WhatsAppBot();
+        this.provider = (process.env.WHATSAPP_PROVIDER || 'wweb').toLowerCase();
+        this.usingBaileys = this.provider === 'baileys';
+        this.bot = this.usingBaileys ? new BaileysBot() : new WhatsAppBot();
+        console.log(`🤖 Driver WhatsApp selecionado: ${this.usingBaileys ? 'Baileys (@whiskeysockets/baileys)' : 'whatsapp-web.js'}`);
         this.setupDirectories(); // Cria diretórios necessários
         this.setupGracefulShutdown();
         this.setupCleanup();
@@ -434,12 +432,43 @@ class App {
             app.post('/api/chats/:id/end-attendant', (req, res) => {
                 try {
                     const chatId = req.params.id;
-                    this.bot.reactivateBotForChat(chatId);
-                    // Salva no banco
-                    messageStore.setBotPaused(chatId, false);
+                    // Verifica se bot tem método reactivateBotForChat (pode não existir no Baileys)
+                    if (this.bot.reactivateBotForChat) {
+                        this.bot.reactivateBotForChat(chatId);
+                        messageStore.setBotPaused(chatId, false);
+                    }
                     res.json({ ok: true });
                 } catch (e) {
                     res.status(500).json({ error: 'internal_error' });
+                }
+            });
+
+            // API: limpar contexto de um chat específico (manual)
+            app.post('/api/chats/:id/clear-context', (req, res) => {
+                try {
+                    const chatId = req.params.id;
+                    if (this.bot.clearContextForChat) {
+                        const result = this.bot.clearContextForChat(chatId);
+                        res.json({ ok: true, ...result });
+                    } else {
+                        res.json({ ok: true, message: 'Método não disponível neste driver' });
+                    }
+                } catch (e) {
+                    res.status(500).json({ error: e.message || 'internal_error' });
+                }
+            });
+
+            // API: limpar todos os contextos (útil para testes)
+            app.post('/api/chats/clear-all-contexts', (req, res) => {
+                try {
+                    if (this.bot.clearAllContexts) {
+                        const result = this.bot.clearAllContexts();
+                        res.json({ ok: true, ...result });
+                    } else {
+                        res.json({ ok: true, message: 'Método não disponível neste driver' });
+                    }
+                } catch (e) {
+                    res.status(500).json({ error: e.message || 'internal_error' });
                 }
             });
 
@@ -573,8 +602,11 @@ class App {
                     const file = req.file;
 
                     if (!file) {
+                        console.warn(`[send-audio] Nenhum arquivo recebido para ${chatId}`);
                         return res.status(400).json({ error: 'Nenhum arquivo enviado' });
                     }
+
+                    console.log(`[send-audio] Iniciando envio para ${chatId}. Arquivo: ${file.originalname} (${file.mimetype}, ${file.size} bytes)`);
 
                     // IMPORTANTE: Marca bot como pausado quando atendente envia áudio pelo painel
                     const wasPaused = this.bot.isBotPausedForChat(chatId);
@@ -588,35 +620,92 @@ class App {
                     const timestamp = Date.now();
                     messageStore.updateLastAttendantMessage(chatId, timestamp);
 
-                    // Converte WebM para OGG Opus (formato aceito pelo WhatsApp)
-                    const outputPath = file.path + '.ogg';
-                    let converted = false;
-                    
-                    await new Promise((resolve, reject) => {
-                        ffmpeg(file.path)
-                            .toFormat('ogg')
-                            .audioCodec('libopus')
-                            .audioBitrate(32)
-                            .audioChannels(1)
-                            .audioFrequency(16000)
-                            .on('end', () => {
-                                converted = true;
-                                resolve();
-                            })
-                            .on('error', (err) => {
-                                converted = false;
-                                resolve(); // Continua mesmo se converter falhar
-                            })
-                            .save(outputPath);
-                    });
+                    const clientInstance = this.bot.client;
+                    if (!this.usingBaileys && !clientInstance) {
+                        console.error('[send-audio] Bot não conectado');
+                        return res.status(503).json({ error: 'Bot não conectado' });
+                    }
 
-                    // Envia áudio pelo bot
-                    let finalPath = converted && fs.existsSync(outputPath) ? outputPath : file.path;
-                    const result = await this.bot.sendAudio(chatId, finalPath, 'audio.ogg');
+                    const tempDir = path.join(__dirname, 'temp_audio');
+                    if (!fs.existsSync(tempDir)) {
+                        fs.mkdirSync(tempDir, { recursive: true });
+                    }
+
+                    const convertedPath = path.join(
+                        tempDir,
+                        `voz_${Date.now()}_${Math.random().toString(36).slice(2)}.ogg`
+                    );
+
+                    console.log(`[send-audio] Arquivo temporário: ${file.path}. Converter para ${convertedPath}`);
+
+                    const originalExt = path.extname(file.originalname || '');
+                    const mimeExtMap = {
+                        'audio/webm': '.webm',
+                        'audio/ogg': '.ogg',
+                        'audio/mpeg': '.mp3',
+                        'audio/mp3': '.mp3',
+                        'audio/wav': '.wav',
+                        'audio/x-wav': '.wav',
+                        'audio/aac': '.aac',
+                        'audio/m4a': '.m4a',
+                        'audio/x-m4a': '.m4a',
+                        'audio/3gpp': '.3gp'
+                    };
+                    const inferredExt = mimeExtMap[file.mimetype] || originalExt || '.webm';
+                    let sourcePath = file.path;
+                    let renamedSource = false;
+                    if (!path.extname(file.path)) {
+                        sourcePath = `${file.path}${inferredExt}`;
+                        try {
+                            fs.renameSync(file.path, sourcePath);
+                            renamedSource = true;
+                            console.log(`[send-audio] Renomeado arquivo temporário para ${sourcePath}`);
+                        } catch (renameErr) {
+                            console.warn('⚠️ Não foi possível renomear arquivo temporário:', renameErr);
+                            sourcePath = file.path;
+                        }
+                    }
+
+                    const validMagicBytes = ['\x52\x49\x46\x46', 'OggS', '\x1A\x45\xDF\xA3'];
+                    const header = Buffer.alloc(4);
+                    const fd = fs.openSync(sourcePath, 'r');
+                    fs.readSync(fd, header, 0, 4, 0);
+                    fs.closeSync(fd);
+                    const headerStr = header.toString('latin1');
+                    const isValidHeader = validMagicBytes.some((magic) => headerStr.startsWith(magic));
+                    if (!isValidHeader) {
+                        console.error('[send-audio] Arquivo inválido (magic bytes não reconhecidos)');
+                        throw new Error('Arquivo enviado não é um áudio válido ou está corrompido');
+                    }
+
+                    try {
+                        console.log('[send-audio] Iniciando conversão para Opus...');
+                        await convertToOpus(sourcePath, convertedPath);
+                        console.log('[send-audio] Conversão concluída');
+                    } catch (conversionError) {
+                        console.error('❌ Erro ao converter áudio para Opus:', conversionError);
+                        if (fs.existsSync(convertedPath)) {
+                            fs.unlinkSync(convertedPath);
+                        }
+                        if (renamedSource && fs.existsSync(sourcePath)) {
+                            fs.unlinkSync(sourcePath);
+                        }
+                        throw conversionError;
+                    }
+
+                    let sendResult = null;
+                    if (this.usingBaileys) {
+                        console.log('[send-audio] Enviando diretamente via Baileys...');
+                        sendResult = await this.bot.sendAudio(chatId, convertedPath, 'audio.ogg');
+                    } else {
+                        console.log('[send-audio] Chamando sendPTT (whatsapp-web.js)...');
+                        await sendPTT(clientInstance, chatId, convertedPath);
+                        console.log('[send-audio] sendPTT concluído');
+                    }
                     
                     // Salva o áudio para playback futuro
-                    const audioId = result?.id || `audio_${Date.now()}`;
-                    const audioData = fs.readFileSync(finalPath);
+                    const audioId = sendResult?.key?.id || `audio_${Date.now()}`;
+                    const audioData = fs.readFileSync(convertedPath);
                     const audioDir = path.join(__dirname, 'audios');
                     if (!fs.existsSync(audioDir)) {
                         fs.mkdirSync(audioDir, { recursive: true });
@@ -635,13 +724,12 @@ class App {
                     
                     // Remove arquivo temporário
                     try {
-                        // Remove arquivo convertido se existir
-                        if (converted && fs.existsSync(outputPath)) fs.unlinkSync(outputPath);
-                        // Remove arquivo original
-                        if (fs.existsSync(file.path)) fs.unlinkSync(file.path);
+                        if (fs.existsSync(convertedPath)) fs.unlinkSync(convertedPath);
+                        if (fs.existsSync(sourcePath)) fs.unlinkSync(sourcePath);
                     } catch (e) {}
 
-                    res.json({ ok: true, messageId: result?.id || null });
+                    console.log(`[send-audio] Finalizado com sucesso para ${chatId}, audioId=${audioId}`);
+                    res.json({ ok: true, messageId: audioId });
                 } catch (e) {
                     console.error('❌ Erro ao enviar áudio:', e);
                     res.status(500).json({ error: e.message || 'internal_error' });
@@ -719,9 +807,9 @@ class App {
                     
                     // Envia imagem pelo bot DEPOIS de salvar no banco
                     await this.bot.sendKeepingUnread(
-                        () => this.bot.client.sendImage(chatId, finalPath, fileName, ''),
+                        () => this.bot.sendFile(chatId, finalPath, fileName, ''),
                         chatId,
-                        '[imagem]'
+                        null // já registramos no banco acima
                     );
                     
                     // Remove arquivo temporário
@@ -767,9 +855,9 @@ class App {
 
                     // Envia arquivo pelo bot
                     await this.bot.sendKeepingUnread(
-                        () => this.bot.client.sendFile(chatId, finalPath, fileName, ''),
+                        () => this.bot.sendFile(chatId, finalPath, fileName, ''),
                         chatId,
-                        '[arquivo]'
+                        null // mensagem já registrada acima
                     );
                     
                     // Salva o arquivo para exibição no painel
@@ -885,12 +973,12 @@ class App {
             });
 
             // QR Code atual (se disponível)
-            app.get('/api/session/qr', (req, res) => {
+            app.get('/api/session/qr', async (req, res) => {
                 try {
                     if (!this.bot || typeof this.bot.getLastQr !== 'function') {
                         return res.status(503).json({ error: 'unavailable' });
                     }
-                    const qr = this.bot.getLastQr();
+                    const qr = await this.bot.getLastQr();
                     if (!qr) return res.status(404).json({ error: 'no_qr' });
                     res.setHeader('Content-Type', qr.contentType || 'image/png');
                     return res.send(qr.buffer);
