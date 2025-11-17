@@ -147,6 +147,9 @@ class BaileysBot {
                     continue;
                 }
                 
+                // Aceita @lid como chat individual válido (WhatsApp Business/Enterprise)
+                // @lid pode ser usado em números empresariais, mas ainda é chat individual
+                
                 // Ignora mensagens de sistema/protocolo
                 if (msg.message.protocolMessage || msg.message.senderKeyDistributionMessage) {
                     continue;
@@ -514,6 +517,8 @@ Digite o *número* da opção ou *8* para voltar ao menu.`;
         if (id.includes('@g.us')) return id;
         if (id.includes('@s.whatsapp.net')) return id;
         if (id.includes('@c.us')) return id.replace('@c.us', '@s.whatsapp.net');
+        // Mantém @lid como está (WhatsApp Business/Enterprise)
+        if (id.includes('@lid')) return id;
         if (id.includes('-')) {
             return id.endsWith('@g.us') ? id : `${id}@g.us`;
         }
@@ -524,6 +529,8 @@ Digite o *número* da opção ou *8* para voltar ao menu.`;
     toPanelChatId(jid) {
         if (!jid) return '';
         if (jid.endsWith('@s.whatsapp.net')) return jid.replace('@s.whatsapp.net', '@c.us');
+        // Mantém @lid como está (WhatsApp Business/Enterprise)
+        if (jid.endsWith('@lid')) return jid;
         return jid;
     }
 
