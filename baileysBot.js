@@ -908,6 +908,24 @@ Digite o número da opção ou *8* para voltar ao menu.`;
     getApiErrorMessage(error) {
         const errorMsg = error?.message || String(error || '').toLowerCase();
         const errorCode = error?.code || '';
+        const errorData = error?.response?.data?.data || error?.response?.data || {};
+        
+        // Erro de autenticação/token revogado
+        const isTokenRevoked = (
+            error?.response?.status === 400 || error?.response?.status === 401
+        ) && (
+            errorData?.error === 'access_denied' ||
+            errorData?.hint === 'Access token has been revoked' ||
+            errorData?.errorDescription?.includes('denied') ||
+            errorData?.errorDescription?.includes('revoked')
+        );
+
+        if (isTokenRevoked) {
+            return {
+                userMessage: '⚠️ *Erro de autenticação*\n\nNossa API está com problema de autenticação. Por favor, tente novamente em alguns instantes.\n\n———\nDigite *8* para voltar ao menu.',
+                logMessage: 'Token revogado ou acesso negado'
+            };
+        }
         
         // Erro de conexão/rede
         if (errorCode === 'ECONNREFUSED' || errorCode === 'ENOTFOUND' || 

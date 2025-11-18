@@ -82,7 +82,7 @@ class ZcAuthService {
      * @param {object} data - Dados para envio (opcional)
      * @returns {Promise<object>} Resposta da API
      */
-    async makeAuthenticatedRequest(method, endpoint, data = null) {
+    async makeAuthenticatedRequest(method, endpoint, data = null, retryOnAuthError = true) {
         try {
             const token = await this.getValidToken();
             
@@ -113,6 +113,50 @@ class ZcAuthService {
             if (error.code === 'ECONNABORTED' || error.message.includes('timeout')) {
                 console.error(`⏱️ Timeout na requisição ${method.toUpperCase()} ${endpoint}`);
                 throw new Error('Timeout: API não respondeu a tempo');
+            }
+            
+            // Detecta token revogado ou inválido (400/401 com access_denied)
+            if (error.response && retryOnAuthError) {
+                const status = error.response.status;
+                const errorData = error.response.data?.data || error.response.data;
+                const isTokenRevoked = (
+                    status === 400 || status === 401
+                ) && (
+                    errorData?.error === 'access_denied' ||
+                    errorData?.hint === 'Access token has been revoked' ||
+                    errorData?.errorDescription?.includes('denied') ||
+                    errorData?.errorDescription?.includes('revoked')
+                );
+
+                if (isTokenRevoked) {
+                    console.log('🔄 Token revogado detectado, renovando autenticação...');
+                    // Limpa token atual para forçar nova autenticação
+                    this.token = null;
+                    this.tokenExpiry = null;
+                    
+                    // Tenta novamente com novo token (apenas uma vez)
+                    try {
+                        const newToken = await this.getValidToken();
+                        const retryConfig = {
+                            method: method.toLowerCase(),
+                            url: `${this.baseURL}${endpoint}`,
+                            headers: {
+                                'Authorization': `Bearer ${newToken}`,
+                                'Content-Type': 'application/json',
+                                'X-Request-ID': this.xRequestId
+                            },
+                            timeout: 30000
+                        };
+                        if (data) retryConfig.data = data;
+                        
+                        const retryResponse = await axios(retryConfig);
+                        console.log('✅ Requisição realizada com sucesso após renovar token');
+                        return retryResponse.data;
+                    } catch (retryError) {
+                        console.error('❌ Erro mesmo após renovar token:', retryError.message);
+                        throw retryError;
+                    }
+                }
             }
             
             console.error(`❌ Erro na requisição ${method.toUpperCase()} ${endpoint}:`, error.message);
