@@ -2,7 +2,7 @@ const Database = require('better-sqlite3');
 const path = require('path');
 const fs = require('fs');
 
-const DB_PATH = path.join(__dirname, 'data', 'app.db');
+const DB_PATH = path.join(__dirname, 'data', 'app-bot1.db');
 const DB_DIR = path.dirname(DB_PATH);
 
 // Garante que o diretório existe

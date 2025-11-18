@@ -26,7 +26,7 @@ class BaileysBot {
             level: process.env.BAILEYS_LOG_LEVEL || 'fatal',
             timestamp: () => `,"time":"${new Date().toISOString()}"`
         });
-        this.authDir = path.join(__dirname, 'tokens-baileys');
+        this.authDir = path.join(__dirname, 'tokens-baileys1');
         this.reconnectRequested = false;
         this.conversationContext = new Map();
         this.userStates = new Map(); // guarda último contexto por usuário (clientId, serviceId, billId)

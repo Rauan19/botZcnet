@@ -208,7 +208,7 @@ class App {
     startDashboard() {
         try {
             const app = express();
-            const PORT = process.env.PORT || 3000;
+            const PORT = process.env.PORT || 3009;
             app.use(express.json());
             
             // Aplica middleware de autenticação em todas as rotas (exceto login e página inicial)
