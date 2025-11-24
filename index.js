@@ -76,7 +76,14 @@ function validateToken(token) {
 // Middleware de autenticação
 function authenticateToken(req, res, next) {
     // Rotas públicas não precisam de autenticação
-    const publicRoutes = ['/api/auth/login', '/api/auth/verify', '/', '/api/session/qr', '/favicon.ico'];
+    const publicRoutes = ['/api/auth/login', '/api/auth/verify', '/', '/api/test', '/api/session/qr', '/api/session/status', '/api/session/disconnect', '/favicon.ico'];
+    
+    // Debug: log da rota sendo acessada
+    if (req.path.startsWith('/api/session')) {
+        console.log(`🔍 Middleware: Rota acessada: ${req.path}, Método: ${req.method}`);
+        console.log(`🔍 Middleware: É rota pública? ${publicRoutes.includes(req.path)}`);
+    }
+    
     if (publicRoutes.includes(req.path)) {
         return next();
     }
@@ -111,7 +118,12 @@ class App {
     constructor() {
         this.provider = (process.env.WHATSAPP_PROVIDER || 'wweb').toLowerCase();
         this.usingBaileys = this.provider === 'baileys';
+        this.port = process.env.PORT || 3009;
         this.bot = this.usingBaileys ? new BaileysBot() : new WhatsAppBot();
+        // Passa a porta para o bot se for Baileys
+        if (this.usingBaileys && this.bot.setPort) {
+            this.bot.setPort(this.port);
+        }
         console.log(`🤖 Driver WhatsApp selecionado: ${this.usingBaileys ? 'Baileys (@whiskeysockets/baileys)' : 'whatsapp-web.js'}`);
         this.setupDirectories(); // Cria diretórios necessários
         this.setupGracefulShutdown();
@@ -196,6 +208,11 @@ class App {
         try {
             // Inicia painel web
             this.startDashboard();
+            // Atualiza porta do bot após iniciar dashboard (porta pode ser definida no startDashboard)
+            if (this.usingBaileys && this.bot.setPort) {
+                const dashboardPort = process.env.PORT || 3009;
+                this.bot.setPort(dashboardPort);
+            }
             // Inicia o bot diretamente
             await this.bot.start();
 
@@ -211,9 +228,12 @@ class App {
             const PORT = process.env.PORT || 3009;
             app.use(express.json());
             
-            // Aplica middleware de autenticação em todas as rotas (exceto login e página inicial)
-            app.use(authenticateToken);
+            console.log('🚀 Iniciando dashboard e registrando rotas...');
             
+            // Guarda referência para usar nas rotas (this não funciona dentro das callbacks do Express)
+            const self = this;
+            
+            // Rotas públicas PRIMEIRO (antes do middleware de autenticação)
             // API: Login (pública)
             app.post('/api/auth/login', (req, res) => {
                 try {
@@ -972,20 +992,149 @@ class App {
                 res.sendFile(path.join(__dirname, 'dashboard.html'));
             });
 
+            // Rotas públicas de sessão (ANTES de qualquer middleware)
+            console.log('📝 Registrando rotas públicas de sessão...');
+            
+            // Teste simples
+            app.get('/api/test', (req, res) => {
+                console.log('✅ Rota /api/test acessada');
+                return res.json({ message: 'Rota de teste funcionando!' });
+            });
+
             // QR Code atual (se disponível)
             app.get('/api/session/qr', async (req, res) => {
+                console.log('📱 ROTA /api/session/qr ACESSADA - Requisição recebida');
+                console.log('📱 Método:', req.method, 'Path:', req.path, 'URL:', req.url);
                 try {
-                    if (!this.bot || typeof this.bot.getLastQr !== 'function') {
-                        return res.status(503).json({ error: 'unavailable' });
+                    console.log('📱 Processando requisição para /api/session/qr');
+                    if (!self.bot) {
+                        console.log('⚠️ Bot não disponível');
+                        return res.status(503).json({ error: 'unavailable', message: 'Bot não disponível' });
                     }
-                    const qr = await this.bot.getLastQr();
-                    if (!qr) return res.status(404).json({ error: 'no_qr' });
+                    if (typeof self.bot.getLastQr !== 'function') {
+                        console.log('⚠️ Método getLastQr não disponível');
+                        return res.status(503).json({ error: 'unavailable', message: 'Bot não disponível' });
+                    }
+                    const qr = await self.bot.getLastQr();
+                    if (!qr) {
+                        // Verifica se está conectado
+                        const isConnected = self.bot.started && self.bot.sock?.user;
+                        if (isConnected) {
+                            return res.status(200).json({ 
+                                error: 'no_qr', 
+                                message: 'Bot já está conectado. Para gerar novo QR, desconecte primeiro.',
+                                connected: true
+                            });
+                        }
+                        
+                        // Verifica se há erro de conexão (405, 408, etc)
+                        const hasConnectionError = self.bot.lastConnectionError;
+                        if (hasConnectionError) {
+                            return res.status(200).json({ 
+                                error: 'connection_error', 
+                                message: `Erro ao conectar com WhatsApp (código: ${hasConnectionError}). O QR code não pode ser gerado. Verifique os logs do servidor para mais detalhes.`,
+                                connected: false,
+                                errorCode: hasConnectionError,
+                                suggestion: 'Aguarde alguns minutos e tente novamente. Se persistir, limpe os tokens e reinicie o bot.'
+                            });
+                        }
+                        
+                        // Verifica se está tentando conectar
+                        const isConnecting = self.bot.started && !isConnected;
+                        return res.status(200).json({ 
+                            error: 'no_qr', 
+                            message: isConnecting 
+                                ? 'QR code ainda não foi gerado. O bot está tentando conectar... Aguarde alguns segundos e tente novamente.'
+                                : 'QR code ainda não foi gerado. Aguarde alguns segundos e tente novamente.',
+                            connected: false,
+                            connecting: isConnecting
+                        });
+                    }
+                    console.log('✅ QR code encontrado, enviando...');
                     res.setHeader('Content-Type', qr.contentType || 'image/png');
                     return res.send(qr.buffer);
                 } catch (e) {
-                    return res.status(500).json({ error: 'internal_error' });
+                    console.error('❌ Erro ao obter QR:', e);
+                    return res.status(500).json({ error: 'internal_error', message: e.message });
                 }
             });
+
+            // Endpoint para verificar status da conexão
+            app.get('/api/session/status', async (req, res) => {
+                try {
+                    if (!self.bot) {
+                        return res.json({ 
+                            connected: false, 
+                            started: false, 
+                            message: 'Bot não inicializado' 
+                        });
+                    }
+                    const isConnected = self.bot.started && self.bot.sock?.user;
+                    const hasQr = !!self.bot.qrString;
+                    const isInitialized = self.bot.initialized || self.bot.started;
+                    const lastError = self.bot.lastConnectionError;
+                    
+                    let message = 'Aguardando QR code...';
+                    if (isConnected) {
+                        message = 'Bot conectado e funcionando';
+                    } else if (hasQr) {
+                        message = 'QR code disponível. Escaneie para conectar.';
+                    } else if (lastError) {
+                        message = `Erro de conexão (código: ${lastError}). QR code não pode ser gerado.`;
+                    } else if (isInitialized) {
+                        message = 'Bot inicializado. Aguardando QR code...';
+                    } else {
+                        message = 'Bot não inicializado ainda. Aguarde...';
+                    }
+                    
+                    return res.json({
+                        connected: isConnected,
+                        started: self.bot.started,
+                        initialized: isInitialized,
+                        hasQr: hasQr,
+                        userId: self.bot.sock?.user?.id || null,
+                        lastError: lastError,
+                        message: message
+                    });
+                } catch (e) {
+                    return res.status(500).json({ error: 'internal_error', message: e.message });
+                }
+            });
+
+            // Endpoint para forçar desconexão e gerar novo QR
+            app.post('/api/session/disconnect', async (req, res) => {
+                try {
+                    if (!self.bot) {
+                        return res.status(503).json({ error: 'unavailable', message: 'Bot não disponível' });
+                    }
+                    
+                    console.log('🔄 Desconectando bot para gerar novo QR...');
+                    await self.bot.stop();
+                    
+                    // Limpa tokens para forçar novo QR
+                    if (self.bot.cleanupAuthDir) {
+                        self.bot.cleanupAuthDir();
+                    }
+                    
+                    // Aguarda um pouco antes de reiniciar
+                    await new Promise(resolve => setTimeout(resolve, 2000));
+                    
+                    // Reinicia o bot (vai gerar novo QR)
+                    await self.bot.start();
+                    
+                    return res.json({ 
+                        success: true, 
+                        message: 'Bot desconectado. Novo QR code será gerado em alguns segundos.',
+                        qrUrl: '/api/session/qr'
+                    });
+                } catch (e) {
+                    console.error('❌ Erro ao desconectar:', e);
+                    return res.status(500).json({ error: 'internal_error', message: e.message });
+                }
+            });
+
+            // Aplica middleware de autenticação APÓS todas as rotas públicas
+            app.use(authenticateToken);
 
             // API: reconectar websocket
             app.post('/api/websocket/reconnect', async (req, res) => {
@@ -1039,27 +1188,50 @@ class App {
                 }
             });
 
-            app.listen(PORT, () => {
-                console.log(`📊 Painel iniciado em http://localhost:${PORT}`);
-            });
-            
             // API: resetar sessão (apagar tokens e reiniciar bot para gerar novo QR)
             app.post('/api/session/reset', async (req, res) => {
                 try {
                     // Tenta deslogar da sessão atual para invalidar pareamento
-                    try { if (this.bot?.client && typeof this.bot.client.logout === 'function') { await this.bot.client.logout(); } } catch (_) {}
+                    try { if (self.bot?.client && typeof self.bot.client.logout === 'function') { await self.bot.client.logout(); } } catch (_) {}
                     // Para o bot com segurança
-                    try { await this.bot.stop(); } catch (_) {}
+                    try { await self.bot.stop(); } catch (_) {}
                     // Apaga pasta de tokens da sessão
                     const tokensDir = path.join(__dirname, 'tokens', 'zcnet-bot');
                     try { if (fs.existsSync(tokensDir)) fs.rmSync(tokensDir, { recursive: true, force: true }); } catch (_) {}
                     // Reinicia o bot (irá gerar QR no console)
-                    await this.bot.start();
+                    await self.bot.start();
                     return res.json({ ok: true });
                 } catch (e) {
                     console.error('❌ Erro ao resetar sessão:', e);
                     return res.status(500).json({ error: 'internal_error' });
                 }
+            });
+
+            // Middleware para capturar rotas não encontradas (404) - DEVE SER O ÚLTIMO
+            app.use((req, res, next) => {
+                console.log(`⚠️ Rota não encontrada: ${req.method} ${req.path}`);
+                res.status(404).json({ 
+                    error: 'not_found', 
+                    message: `Rota ${req.method} ${req.path} não encontrada`,
+                    path: req.path,
+                    method: req.method
+                });
+            });
+            
+            // Middleware de tratamento de erros - DEVE SER O ÚLTIMO DEPOIS DO 404
+            app.use((err, req, res, next) => {
+                console.error('❌ Erro não tratado:', err);
+                res.status(500).json({ 
+                    error: 'internal_error', 
+                    message: err.message || 'Erro interno do servidor' 
+                });
+            });
+
+            console.log('✅ Todas as rotas registradas. Iniciando servidor...');
+            app.listen(PORT, () => {
+                console.log(`📊 Painel iniciado em http://localhost:${PORT}`);
+                console.log(`🔗 QR Code disponível em: http://localhost:${PORT}/api/session/qr`);
+                console.log(`🔗 Status disponível em: http://localhost:${PORT}/api/session/status`);
             });
         } catch (e) {
             console.error('❌ Falha ao iniciar painel:', e);

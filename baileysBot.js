@@ -21,13 +21,36 @@ class BaileysBot {
         this.sock = null;
         this.client = null;
         this.started = false;
+        this.initialized = false; // Indica se o bot foi inicializado (mesmo que tenha erro depois)
         this.qrString = null;
+        this.authState = null; // Estado de autenticação para verificar credenciais
         this.logger = P({
             level: process.env.BAILEYS_LOG_LEVEL || 'fatal',
             timestamp: () => `,"time":"${new Date().toISOString()}"`
         });
-        this.authDir = path.join(__dirname, 'tokens-baileys1');
+        
+        // Diretório de autenticação único por instância
+        // Usa variável de ambiente BAILEYS_SESSION_ID ou porta como identificador
+        // IMPORTANTE: process.env.PORT pode ser string, precisa converter
+        const sessionId = process.env.BAILEYS_SESSION_ID || 
+                         (process.env.PORT ? String(process.env.PORT) : null) || 
+                         'baileys1';
+        this.authDir = path.join(__dirname, `tokens-${sessionId}`);
+        this.port = process.env.PORT ? parseInt(process.env.PORT) : 3009; // Porta do servidor para logs
+        console.log(`📁 Diretório de autenticação: ${this.authDir}`);
+        console.log(`🌐 Porta configurada: ${this.port}`);
+        console.log(`🔑 Session ID usado: ${sessionId}`);
+        console.log(`⚠️ IMPORTANTE: Certifique-se de que cada bot usa um diretório diferente!`);
         this.reconnectRequested = false;
+        this.reconnectAttempts = 0;
+        this.maxReconnectAttempts = 5; // Limite de tentativas antes de limpar sessão
+        this.lastDisconnectTime = 0; // Timestamp da última desconexão
+        this.lastConnectTime = 0; // Timestamp da última conexão bem-sucedida
+        this.disconnectCount = 0; // Contador de desconexões consecutivas
+        this.keepAliveInterval = null; // Interval do keepalive
+        this.isRestarting = false; // Flag para evitar múltiplas tentativas de restart simultâneas
+        this.restartTimeout = null; // Timeout do restart para poder cancelar
+        this.lastConnectionError = null; // Último erro de conexão para debug
         this.conversationContext = new Map();
         this.userStates = new Map(); // guarda último contexto por usuário (clientId, serviceId, billId)
         this.lastResponseTime = new Map(); // rate limiting por chat
@@ -41,9 +64,19 @@ class BaileysBot {
         setInterval(() => this.cleanupRateLimiting(), 10 * 60 * 1000);
     }
 
+    setPort(port) {
+        this.port = port;
+        console.log(`🌐 Porta atualizada para: ${this.port}`);
+    }
+
     async start() {
         if (this.started) {
             console.log('⚠️ Baileys já iniciado.');
+            return;
+        }
+        
+        if (this.isRestarting) {
+            console.log('⚠️ Baileys já está reiniciando. Aguarde...');
             return;
         }
 
@@ -51,67 +84,556 @@ class BaileysBot {
             fs.mkdirSync(this.authDir, { recursive: true });
         }
 
+        // Aguarda antes de iniciar para evitar rate limiting (sempre aguarda na primeira vez também)
+        const baseWaitTime = 3000; // 3 segundos base
+        const reconnectWaitTime = this.reconnectAttempts > 0 ? Math.min(5000 * this.reconnectAttempts, 30000) : 0;
+        const totalWaitTime = baseWaitTime + reconnectWaitTime;
+        
+        if (totalWaitTime > 0) {
+            console.log(`⏳ Aguardando ${totalWaitTime/1000}s antes de iniciar conexão (evita erro 405)...`);
+            await new Promise(resolve => setTimeout(resolve, totalWaitTime));
+        }
+
+        console.log('📡 Carregando estado de autenticação...');
         const { state, saveCreds } = await useMultiFileAuthState(this.authDir);
         this.saveCreds = saveCreds;
+        this.authState = state; // Salva state para verificar depois
+        
+        console.log('📦 Buscando versão mais recente do Baileys...');
         const { version } = await fetchLatestBaileysVersion();
+        console.log(`✅ Versão Baileys: ${version.join('.')}`);
 
+        // Verifica se há credenciais salvas
+        const hasCredentials = state.creds && state.creds.me;
+        console.log(`🔐 Estado de autenticação: ${hasCredentials ? 'Credenciais encontradas' : 'Sem credenciais (precisa escanear QR)'}`);
+        if (hasCredentials) {
+            console.log(`📱 Conectado como: ${state.creds.me?.id || 'N/A'}`);
+            // Verifica se credenciais estão válidas
+            if (!state.creds.registered || !state.creds.account) {
+                console.log('⚠️ Credenciais podem estar inválidas ou incompletas');
+            }
+        }
+
+        // Configuração otimizada para evitar erro 405
+        // Aumenta delays e timeouts para evitar rate limiting
         this.sock = makeWASocket({
             version,
             auth: state,
             logger: this.logger,
             browser: Browsers.macOS('Chrome'),
-            markOnlineOnConnect: false,
+            markOnlineOnConnect: false, // Mudado para false para evitar detecção
             syncFullHistory: false,
             emitOwnEvents: false,
             generateHighQualityLinkPreview: false,
-            printQRInTerminal: false
+            // printQRInTerminal foi removido (deprecated) - estamos imprimindo manualmente
+            // Timeouts maiores para evitar desconexões e erro 405
+            connectTimeoutMs: 180000, // 3 minutos (aumentado)
+            defaultQueryTimeoutMs: 180000, // 3 minutos (aumentado)
+            keepAliveIntervalMs: 30000, // Keepalive a cada 30 segundos (menos frequente para evitar detecção)
+            qrTimeout: 180000, // 3 minutos
+            // Configurações para manter conexão
+            shouldSyncHistoryMessage: () => false,
+            shouldIgnoreJid: () => false,
+            // Delays maiores para evitar rate limiting
+            retryRequestDelayMs: 1000, // Aumentado de 250 para 1000ms
+            maxMsgRetryCount: 2, // Reduzido para evitar muitas tentativas
+            // Configurações de conexão
+            getMessage: async (key) => {
+                return undefined; // Não busca mensagens antigas
+            },
+            // Configurações adicionais para evitar erro 405
+            fireInitQueries: false // Não dispara queries automáticas na inicialização
         });
 
         this.client = this.sock;
+        
+        console.log('🔌 Socket Baileys criado. Configurando listeners...');
+        
+        // Marca como não reiniciando quando conecta com sucesso
+        this.isRestarting = false;
+        if (this.restartTimeout) {
+            clearTimeout(this.restartTimeout);
+            this.restartTimeout = null;
+        }
 
+        // Listener único para connection.update (evita duplicação)
         this.sock.ev.on('connection.update', (update) => {
+            if (update.connection === 'connecting') {
+                console.log('🔄 Tentando conectar...');
+            } else if (update.connection === 'open') {
+                console.log('✅ Conexão estabelecida com sucesso!');
+            } else if (update.connection === 'close') {
+                console.log('❌ Conexão fechada');
+            }
+            
+            // Processa atualização através do handler principal
             this.handleConnectionUpdate(update).catch(err => console.error('❌ ERRO conexão Baileys:', err));
         });
+        
+        // Log adicional para verificar se eventos estão sendo registrados
+        console.log('📡 Event listeners registrados. Aguardando eventos de conexão...');
 
-        this.sock.ev.on('creds.update', saveCreds);
+        // Salva credenciais sempre que atualizar
+        this.sock.ev.on('creds.update', () => {
+            console.log('💾 Salvando credenciais atualizadas...');
+            saveCreds();
+        });
 
         this.sock.ev.on('messages.upsert', (payload) => {
             this.handleMessagesUpsert(payload).catch(err => console.error('❌ ERRO mensagens Baileys:', err));
         });
 
         this.started = true;
+        this.initialized = true; // Marca como inicializado
         console.log('✅ Bot Baileys inicializado.');
+        console.log('⏳ Aguardando eventos de conexão do WhatsApp...');
+        console.log('💡 O QR code aparecerá aqui quando o WhatsApp solicitar.');
+        console.log('');
+        
+        // Timeout para verificar se eventos estão sendo recebidos
+        setTimeout(() => {
+            if (!this.qrString && !this.sock?.user) {
+                console.log('⚠️ [DEBUG] Após 5 segundos: Nenhum evento de conexão recebido ainda.');
+                console.log('⚠️ [DEBUG] Socket existe?', !!this.sock);
+                console.log('⚠️ [DEBUG] Socket tem eventos?', !!this.sock?.ev);
+                console.log('💡 Isso é normal se não houver credenciais salvas. Aguarde mais alguns segundos...');
+            }
+        }, 5000);
     }
 
     async handleConnectionUpdate(update) {
         const { connection, lastDisconnect, qr } = update;
+        
+        // Log detalhado quando há QR
         if (qr) {
+            console.log(`🔍 [DEBUG] QR recebido! Tamanho: ${qr.length} caracteres`);
             this.qrString = qr;
-            console.log('📱 QR code Baileys atualizado. Acesse /api/session/qr para visualizar.');
+            console.log('');
+            console.log('═══════════════════════════════════════════════════════');
+            console.log('📱 QR CODE GERADO - ESCANEIE COM SEU WHATSAPP');
+            console.log('═══════════════════════════════════════════════════════');
+            console.log('');
+            
+            // Imprime QR code no terminal usando qrcode-terminal
+            try {
+                const qrcodeTerminal = require('qrcode-terminal');
+                console.log('🖨️ Imprimindo QR code no terminal...');
+                qrcodeTerminal.generate(qr, { small: true });
+                console.log('✅ QR code impresso no terminal!');
+            } catch (e) {
+                console.log('⚠️ Erro ao gerar QR no terminal:', e.message);
+                console.log('💡 Stack:', e.stack);
+            }
+            
+            console.log('');
+            console.log('═══════════════════════════════════════════════════════');
+            console.log(`📱 Ou acesse: http://localhost:${this.port}/api/session/qr`);
+            console.log(`📊 Status: http://localhost:${this.port}/api/session/status`);
+            console.log('═══════════════════════════════════════════════════════');
+            console.log('');
+            console.log('⏳ Aguardando escaneamento do QR code...');
+            console.log('');
+            this.reconnectAttempts = 0; // Reset contador quando QR é gerado
         }
 
         if (connection === 'open') {
-            console.log('🤝 Baileys conectado.');
-            this.qrString = null;
+            console.log('');
+            console.log('═══════════════════════════════════════════════════════');
+            console.log('🤝 BAILEYS CONECTADO COM SUCESSO!');
+            console.log('═══════════════════════════════════════════════════════');
+            this.qrString = null; // Limpa QR quando conecta
+            
+            // Reseta contadores quando conecta com sucesso
+            this.reconnectAttempts = 0;
+            this.disconnectCount = 0;
+            this.lastConnectTime = Date.now();
+            this.isRestarting = false; // Reseta flag de restart quando conecta
+            this.lastConnectionError = null; // Limpa erro quando conecta
+            if (this.restartTimeout) {
+                clearTimeout(this.restartTimeout);
+                this.restartTimeout = null;
+            }
+            
+            // Verifica se socket está realmente conectado
+            if (this.sock?.user) {
+                const userId = this.sock.user.id;
+                const phoneNumber = userId.split(':')[0];
+                console.log(`✅ Sessão ativa: ${userId}`);
+                console.log(`📱 Número conectado: ${phoneNumber}`);
+                console.log(`🌐 Servidor rodando em: http://localhost:${this.port}`);
+                console.log(`📊 Painel disponível em: http://localhost:${this.port}`);
+                console.log(`📁 Diretório de tokens: ${this.authDir}`);
+                console.log('═══════════════════════════════════════════════════════');
+                console.log('');
+            } else {
+                console.log('⚠️ Socket conectado mas sem informações do usuário');
+            }
+            
+            // Inicia keepalive manual para garantir conexão
+            this.startKeepAlive();
         } else if (connection === 'close') {
             const statusCode = new Boom(lastDisconnect?.error)?.output?.statusCode;
+            const errorMessage = lastDisconnect?.error?.message || 'Sem mensagem de erro';
             console.log('⚠️ Baileys desconectado:', statusCode);
+            console.log(`📋 Detalhes da desconexão: ${errorMessage}`);
+            if (lastDisconnect?.error) {
+                console.log(`🔍 Erro completo:`, JSON.stringify(lastDisconnect.error, null, 2));
+            }
             this.started = false;
+            this.lastConnectionError = statusCode; // Salva último erro para debug
 
-            if (statusCode === DisconnectReason.loggedOut) {
-                console.log('🧹 Sessão Baileys inválida. Limpando tokens para gerar novo QR.');
-                this.cleanupAuthDir();
+            // VERIFICA CÓDIGO 428 PRIMEIRO - Connection Terminated by Server (múltiplas instâncias)
+            const isCode428 = (statusCode === 428);
+            
+            if (isCode428) {
+                console.log(`⚠️ Código 428 detectado: CONEXÃO TERMINADA PELO SERVIDOR`);
+                console.log(`💡 Isso geralmente significa:`);
+                console.log(`   - Múltiplas instâncias estão usando a mesma sessão`);
+                console.log(`   - Outro bot está conectado com o mesmo número`);
+                console.log(`   - Sessão está sendo usada em outro lugar`);
+                console.log(`\n📁 Diretório de autenticação atual: ${this.authDir}`);
+                console.log(`💡 SOLUÇÃO:`);
+                console.log(`   1. Pare TODOS os bots (Ctrl+C em todos os terminais)`);
+                console.log(`   2. Certifique-se de que cada bot usa um diretório diferente`);
+                console.log(`   3. Use: npm run start:bot1, npm run start:bot2, npm run start:bot3`);
+                console.log(`   4. Ou configure PORT diferente: PORT=3009 npm run start:baileys`);
+                console.log(`\n⛔ PARANDO RECONEXÃO AUTOMÁTICA para evitar loops!`);
+                console.log(`   Reinicie manualmente após resolver o conflito.`);
+                
+                // Cancela restart anterior se existir
+                if (this.restartTimeout) {
+                    clearTimeout(this.restartTimeout);
+                    this.restartTimeout = null;
+                }
+                
+                // Fecha socket anterior se existir
+                try {
+                    if (this.sock) {
+                        this.sock.end();
+                        this.sock = null;
+                    }
+                } catch (e) {
+                    // Ignora erros ao fechar socket
+                }
+                
+                // Para keepalive
+                if (this.keepAliveInterval) {
+                    clearInterval(this.keepAliveInterval);
+                    this.keepAliveInterval = null;
+                }
+                
+                // NÃO tenta reconectar automaticamente quando há conflito de sessão
+                this.pauseRequested = true;
+                
+                return;
+            }
+            
+            // VERIFICA CÓDIGO 440 PRIMEIRO - ANTES DE QUALQUER OUTRA COISA
+            const isCode440 = (statusCode === 440);
+            
+            // Verifica se é erro de conflito (sessão substituída)
+            const isConflictReplaced = (
+                isCode440 && 
+                lastDisconnect?.error?.data?.content?.some?.(
+                    item => item?.tag === 'conflict' && item?.attrs?.type === 'replaced'
+                )
+            );
+            
+            if (isCode440) {
+                if (isConflictReplaced) {
+                    console.log(`⚠️ Código 440 detectado: SESSÃO SUBSTITUÍDA (conflict/replaced)`);
+                    console.log(`💡 Isso significa que:`);
+                    console.log(`   - WhatsApp foi aberto em outro dispositivo`);
+                    console.log(`   - Ou outra instância do bot está usando a mesma sessão`);
+                    console.log(`   - A sessão atual foi substituída por outra conexão`);
+                    console.log(`\n📁 Diretório de autenticação atual: ${this.authDir}`);
+                    console.log(`\n⚠️ ATENÇÃO: Não limpará tokens automaticamente para evitar loops!`);
+                    console.log(`💡 SOLUÇÃO MANUAL:`);
+                    console.log(`   1. Verifique se há outro bot rodando na VPS ou localmente`);
+                    console.log(`   2. Certifique-se de que cada bot usa um diretório diferente`);
+                    console.log(`   3. Se necessário, limpe tokens manualmente: Remove-Item -Recurse -Force "${this.authDir}"`);
+                    console.log(`   4. Reinicie o bot após limpar tokens`);
+                    
+                    // Cancela restart anterior se existir
+                    if (this.restartTimeout) {
+                        clearTimeout(this.restartTimeout);
+                        this.restartTimeout = null;
+                    }
+                    
+                    // Evita múltiplas tentativas simultâneas
+                    if (this.isRestarting) {
+                        console.log('⚠️ Já existe um restart em andamento. Aguardando...');
+                        return;
+                    }
+                    
+                    // Fecha socket anterior se existir
+                    try {
+                        if (this.sock) {
+                            this.sock.end();
+                            this.sock = null;
+                        }
+                    } catch (e) {
+                        // Ignora erros ao fechar socket
+                    }
+                    
+                    // NÃO limpa tokens automaticamente - deixa para o usuário decidir
+                    // this.cleanupAuthDir(); // COMENTADO para evitar loops
+                    
+                    this.reconnectAttempts = 0;
+                    this.disconnectCount = 0;
+                    this.lastDisconnectTime = 0;
+                    this.lastConnectTime = 0;
+                    
+                    // Para keepalive
+                    if (this.keepAliveInterval) {
+                        clearInterval(this.keepAliveInterval);
+                        this.keepAliveInterval = null;
+                    }
+                    
+                    // Marca como pausado para não tentar reconectar automaticamente
+                    this.pauseRequested = true;
+                    
+                    console.log(`\n⛔ Bot pausado. Para reconectar:`);
+                    console.log(`   1. Resolva o conflito de sessão`);
+                    console.log(`   2. Limpe tokens se necessário`);
+                    console.log(`   3. Reinicie o bot manualmente`);
+                    
+                    return;
+                } else {
+                    console.log(`⚠️ Código 440 detectado (sessão fechada temporariamente).`);
+                    console.log(`💡 Possíveis causas:`);
+                    console.log(`   - Tokens inválidos ou expirados`);
+                    console.log(`   - Problema de rede/conexão`);
+                    console.log(`   - WhatsApp detectou atividade suspeita`);
+                    
+                    // Para código 440 genérico, PARA COMPLETAMENTE
+                    console.log(`⛔ PARANDO COMPLETAMENTE. Não tentará reconectar automaticamente.`);
+                    console.log(`💡 Para reconectar:`);
+                    console.log(`   1. Limpe tokens: rm -rf ${this.authDir}`);
+                    console.log(`   2. Reinicie o bot`);
+                    console.log(`   3. Escaneie novo QR code`);
+                    
+                    // Para keepalive se estiver rodando
+                    if (this.keepAliveInterval) {
+                        clearInterval(this.keepAliveInterval);
+                        this.keepAliveInterval = null;
+                    }
+                    
+                    // Marca como pausado para não tentar reconectar
+                    this.pauseRequested = true;
+                    
+                    return; // Para completamente, não tenta reconectar
+                }
             }
 
-            if (!this.pauseRequested) {
-                console.log('🔄 Tentando reconectar Baileys em 5s...');
+            const now = Date.now();
+            const timeSinceLastDisconnect = now - (this.lastDisconnectTime || 0);
+            const timeSinceLastConnect = now - (this.lastConnectTime || 0);
+            
+            // Se desconectou muito rápido após conectar (menos de 30 segundos), incrementa contador
+            if (timeSinceLastConnect < 30000 && this.lastConnectTime > 0) {
+                this.disconnectCount++;
+                console.log(`⚠️ Desconexão rápida após conectar (${Math.round(timeSinceLastConnect/1000)}s). Contador: ${this.disconnectCount}/3`);
+            } else if (timeSinceLastDisconnect > 60000) {
+                // Se passou mais de 1 minuto desde última desconexão, reseta contador
+                this.disconnectCount = 1;
+            } else {
+                // Incrementa contador se desconexões estão próximas
+                this.disconnectCount++;
+            }
+            this.lastDisconnectTime = now;
+
+            // Códigos que indicam sessão completamente inválida (precisa limpar tokens)
+            const mustCleanSession = (
+                statusCode === DisconnectReason.loggedOut ||
+                statusCode === DisconnectReason.badSession
+            );
+
+            if (mustCleanSession) {
+                console.log('🧹 Sessão Baileys inválida (código:', statusCode, '). Limpando tokens para gerar novo QR.');
+                this.cleanupAuthDir();
+                this.reconnectAttempts = 0;
+                this.disconnectCount = 0;
+                this.lastDisconnectTime = 0;
+                this.lastConnectTime = 0;
+                return;
+            }
+
+            // Verifica erro 405 (Connection Failure) - geralmente indica problema com versão do Baileys ou bloqueio temporário
+            const isCode405 = (statusCode === 405);
+            
+            if (isCode405) {
+                console.log(`\n${'='.repeat(60)}`);
+                console.log(`⚠️ ERRO 405 DETECTADO: CONNECTION FAILURE`);
+                console.log(`${'='.repeat(60)}`);
+                console.log(`💡 Isso geralmente significa:`);
+                console.log(`   - WhatsApp bloqueou temporariamente a conexão`);
+                console.log(`   - Rate limiting do WhatsApp (muitas tentativas)`);
+                console.log(`   - Problema temporário nos servidores do WhatsApp`);
+                console.log(`   - Versão do Baileys pode estar desatualizada`);
+                console.log(`   - Credenciais antigas/inválidas podem estar causando o problema`);
+                
+                // Se não há credenciais válidas, limpa tokens automaticamente na primeira tentativa
+                const hasValidCredentials = this.sock?.user || (this.authState?.creds?.me && this.authState?.creds?.registered);
+                if (!hasValidCredentials && this.reconnectAttempts === 0) {
+                    console.log(`\n🧹 Sem credenciais válidas detectadas. Limpando tokens para forçar novo QR...`);
+                    try {
+                        this.cleanupAuthDir();
+                        this.authState = null; // Limpa referência
+                        console.log(`✅ Tokens limpos. Próxima tentativa gerará novo QR code.`);
+                    } catch (e) {
+                        console.log(`⚠️ Erro ao limpar tokens:`, e.message);
+                    }
+                }
+                
+                console.log(`\n${'='.repeat(60)}`);
+                console.log(`⛔ PARANDO RECONEXÃO AUTOMÁTICA PARA EVITAR LOOP!`);
+                console.log(`${'='.repeat(60)}`);
+                console.log(`\n💡 SOLUÇÕES:`);
+                console.log(`\n📋 OPÇÃO 1 - Aguardar e tentar novamente:`);
+                console.log(`   1. Pare o bot completamente (Ctrl+C)`);
+                console.log(`   2. AGUARDE 2-4 HORAS antes de tentar novamente`);
+                console.log(`   3. Limpe tokens: Remove-Item -Recurse -Force "${this.authDir}"`);
+                console.log(`   4. Reinicie o bot`);
+                console.log(`\n📋 OPÇÃO 2 - Usar whatsapp-web.js temporariamente:`);
+                console.log(`   1. Pare o bot (Ctrl+C)`);
+                console.log(`   2. Execute: npm start`);
+                console.log(`   3. Isso usa whatsapp-web.js em vez de Baileys`);
+                console.log(`   4. Aguarde 24-48h e tente Baileys novamente`);
+                console.log(`\n📋 OPÇÃO 3 - Executar script de resolução:`);
+                console.log(`   1. Execute: .\RESOLVER_ERRO_405.ps1`);
+                console.log(`   2. Siga as instruções do script`);
+                console.log(`\n⚠️ IMPORTANTE:`);
+                console.log(`   - QR code NÃO será gerado enquanto houver erro 405!`);
+                console.log(`   - O bot precisa conseguir conectar aos servidores primeiro`);
+                console.log(`   - Não tente reconectar imediatamente (piora o bloqueio)`);
+                console.log(`\n${'='.repeat(60)}\n`);
+                
+                // Cancela qualquer restart pendente
+                if (this.restartTimeout) {
+                    clearTimeout(this.restartTimeout);
+                    this.restartTimeout = null;
+                }
+                
+                // Fecha socket
+                try {
+                    if (this.sock) {
+                        this.sock.end();
+                        this.sock = null;
+                    }
+                } catch (e) {
+                    // Ignora erros
+                }
+                
+                // Para keepalive
+                if (this.keepAliveInterval) {
+                    clearInterval(this.keepAliveInterval);
+                    this.keepAliveInterval = null;
+                }
+                
+                // PARA COMPLETAMENTE - não tenta reconectar automaticamente
+                this.pauseRequested = true;
+                this.isRestarting = false;
+                
+                console.log(`\n🛑 Bot parado. Reinicie manualmente após aguardar ou use whatsapp-web.js.\n`);
+                
+                return;
+            }
+            
+            // Verifica erro 408 (DNS/Network) - não deve tentar reconectar infinitamente
+            const isCode408 = (statusCode === 408);
+            const isNetworkError = errorMessage && (
+                errorMessage.includes('ENOTFOUND') || 
+                errorMessage.includes('getaddrinfo') ||
+                errorMessage.includes('ECONNREFUSED') ||
+                errorMessage.includes('ETIMEDOUT')
+            );
+            
+            if (isCode408 || isNetworkError) {
+                console.log(`⚠️ Erro de rede/DNS detectado (código: ${statusCode})`);
+                console.log(`💡 Problema: ${errorMessage}`);
+                console.log(`💡 Possíveis causas:`);
+                console.log(`   - Sem conexão com internet`);
+                console.log(`   - Problema de DNS`);
+                console.log(`   - Firewall bloqueando conexão`);
+                console.log(`   - WhatsApp está fora do ar`);
+                console.log(`\n⏸️ Aguardando 30 segundos antes de tentar reconectar...`);
+                console.log(`   Se o problema persistir, verifique sua conexão com internet.`);
+                
+                // Aguarda mais tempo para erros de rede
+                setTimeout(() => {
+                    if (!this.started && !this.pauseRequested && this.reconnectAttempts < 3) {
+                        this.reconnectAttempts++;
+                        console.log(`🔄 Tentativa ${this.reconnectAttempts}/3 - Tentando reconectar após erro de rede...`);
+                        this.start().catch(err => console.error('❌ Falha ao reconectar Baileys:', err));
+                    } else if (this.reconnectAttempts >= 3) {
+                        console.log(`⛔ Limite de tentativas de rede atingido. Parando reconexão automática.`);
+                        console.log(`💡 Verifique sua conexão com internet e reinicie o bot manualmente.`);
+                        this.pauseRequested = true;
+                    }
+                }, 30000);
+                
+                return;
+            }
+            
+            // Para outros códigos de desconexão (não 440, não loggedOut, não badSession, não 405, não 408)
+            if (!this.pauseRequested && statusCode !== 440 && statusCode !== 405 && statusCode !== 408) {
+                // Se muitas desconexões consecutivas, aguarda mais tempo
+                if (this.disconnectCount >= 3) {
+                    console.log('⏸️ Muitas desconexões consecutivas. Aguardando 60 segundos antes de tentar reconectar...');
+                    setTimeout(() => {
+                        if (!this.started) {
+                            this.start().catch(err => console.error('❌ Falha ao reconectar Baileys:', err));
+                        }
+                    }, 60000);
+                    return;
+                }
+
+                this.reconnectAttempts++;
+                
+                // Limite máximo de tentativas
+                if (this.reconnectAttempts > this.maxReconnectAttempts) {
+                    console.log(`⛔ Limite de tentativas atingido (${this.reconnectAttempts}). Parando reconexão automática.`);
+                    console.log(`💡 Para reconectar, reinicie o bot manualmente ou limpe tokens: ${this.authDir}`);
+                    return; // Para de tentar reconectar
+                }
+
+                // Delay progressivo: 10s, 20s, 30s, 40s, 50s
+                const delay = Math.min(10000 * this.reconnectAttempts, 50000);
+                console.log(`🔄 Tentativa ${this.reconnectAttempts}/${this.maxReconnectAttempts} - Reconectando Baileys em ${delay/1000}s...`);
+                
                 setTimeout(() => {
                     if (!this.started) {
                         this.start().catch(err => console.error('❌ Falha ao reconectar Baileys:', err));
                     }
-                }, 5000);
+                }, delay);
             }
         }
+    }
+
+    startKeepAlive() {
+        // Limpa keepalive anterior se existir
+        if (this.keepAliveInterval) {
+            clearInterval(this.keepAliveInterval);
+        }
+        
+        // Envia keepalive a cada 15 segundos para manter conexão ativa
+        this.keepAliveInterval = setInterval(() => {
+            if (this.sock && this.started && this.sock.user) {
+                try {
+                    // Envia um ping para manter conexão viva
+                    this.sock.sendPresenceUpdate('available');
+                } catch (e) {
+                    // Ignora erros de keepalive
+                }
+            } else {
+                // Se não está conectado, para o keepalive
+                if (this.keepAliveInterval) {
+                    clearInterval(this.keepAliveInterval);
+                    this.keepAliveInterval = null;
+                }
+            }
+        }, 15000); // A cada 15 segundos
     }
 
     cleanupAuthDir() {
@@ -227,8 +749,30 @@ class BaileysBot {
                     continue;
                 }
 
-                // Verifica saudações ANTES de shouldIgnoreMessage (para não ignorar "oi", "oii", etc)
-                if (!normalized || this.isGreeting(normalized)) {
+                // Verifica se há problema técnico na mensagem ORIGINAL (PRIORIDADE MÁXIMA)
+                const hasTechnicalIssue = body.toLowerCase().includes('sem internet') || 
+                                        body.toLowerCase().includes('internet caiu') ||
+                                        body.toLowerCase().includes('sem conexão') ||
+                                        body.toLowerCase().includes('internet parou') ||
+                                        body.toLowerCase().includes('internet não funciona') ||
+                                        body.toLowerCase().includes('internet lenta') ||
+                                        body.toLowerCase().includes('internet travando') ||
+                                        body.toLowerCase().includes('sem sinal') ||
+                                        body.toLowerCase().includes('internet cai') ||
+                                        body.toLowerCase().includes('caiu a internet');
+                
+                // Se tem problema técnico, trata como problema técnico (mesmo com saudação)
+                if (hasTechnicalIssue) {
+                    console.log(`🔧 [${chatId}] Problema técnico detectado, redirecionando para suporte`);
+                    await this.handleSupportSubmenu(chatId, '3', context);
+                    continue;
+                }
+                
+                // Verifica se mensagem COMEÇA com saudação (não se é exatamente saudação)
+                const startsWithGreeting = this.startsWithGreeting(normalized);
+                
+                // Se mensagem vazia ou começa com saudação SEM problema técnico, envia menu
+                if (!normalized || startsWithGreeting) {
                     await this.sendMenu(chatId);
                     continue;
                 }
@@ -245,6 +789,161 @@ class BaileysBot {
 
                 const handled = await this.handleMenuSelection(chatId, normalized, context);
                 if (handled) continue;
+
+                // Verifica se está aguardando escolha da cobrança
+                if (context.currentMenu === 'payment' && context.currentStep === 'waiting_bill_selection') {
+                    const ctx = this.userStates.get(chatId);
+                    
+                    if (!ctx || !ctx.bills || ctx.bills.length === 0) {
+                        await this.sendText(chatId, '*❌ ERRO*\n\nDados não encontrados. Por favor, envie seu CPF novamente.\n———\nDigite *8* para voltar ao menu.');
+                        this.setConversationContext(chatId, {
+                            currentMenu: 'payment',
+                            currentStep: 'waiting_cpf'
+                        });
+                        continue;
+                    }
+
+                    // Verifica se é um número válido (1 até o número de cobranças)
+                    const selectedNum = parseInt(normalized);
+                    if (isNaN(selectedNum) || selectedNum < 1 || selectedNum > ctx.bills.length) {
+                        // Formata data para exibição
+                        const formatDate = (dateStr) => {
+                            try {
+                                if (!dateStr) return 'Data inválida';
+                                
+                                // Se for string no formato ISO (YYYY-MM-DD ou YYYY-MM-DDTHH:mm:ss)
+                                if (typeof dateStr === 'string' && /^\d{4}-\d{2}-\d{2}/.test(dateStr)) {
+                                    // Extrai dia, mês e ano diretamente da string (ignora timezone)
+                                    const parts = dateStr.split('T')[0].split('-');
+                                    if (parts.length === 3) {
+                                        const year = parts[0];
+                                        const month = parts[1];
+                                        const day = parts[2];
+                                        // Log para debug (pode remover depois)
+                                        console.log(`📅 [DEBUG] Data original: ${dateStr} → Formatada: ${day}/${month}/${year}`);
+                                        return `${day}/${month}/${year}`;
+                                    }
+                                }
+                                
+                                // Se for número (timestamp), converte
+                                if (typeof dateStr === 'number') {
+                                    const date = new Date(dateStr);
+                                    const day = String(date.getDate()).padStart(2, '0');
+                                    const month = String(date.getMonth() + 1).padStart(2, '0');
+                                    const year = date.getFullYear();
+                                    return `${day}/${month}/${year}`;
+                                }
+                                
+                                // Fallback: usa Date no timezone local (não UTC)
+                                const date = new Date(dateStr);
+                                if (isNaN(date.getTime())) return 'Data inválida';
+                                
+                                // Usa métodos locais (não UTC) para preservar o dia correto
+                                const day = String(date.getDate()).padStart(2, '0');
+                                const month = String(date.getMonth() + 1).padStart(2, '0');
+                                const year = date.getFullYear();
+                                return `${day}/${month}/${year}`;
+                            } catch {
+                                return 'Data inválida';
+                            }
+                        };
+
+                        // Formata valor para exibição
+                        const formatValue = (value) => {
+                            try {
+                                const num = parseFloat(value) || 0;
+                                return `R$ ${num.toFixed(2).replace('.', ',')}`;
+                            } catch {
+                                return 'R$ 0,00';
+                            }
+                        };
+
+                        let billsMenu = `*Selecione qual cobrança deseja pagar:*\n\n`;
+                        ctx.bills.forEach((bill, index) => {
+                            const num = index + 1;
+                            const vencimento = formatDate(bill.dataVencimento);
+                            billsMenu += `*${num}️⃣* Vencimento: *${vencimento}*\n`;
+                        });
+                        billsMenu += `\n———\n*DIGITE O NÚMERO DA OPÇÃO COM A DATA DA COBRANÇA DESEJADA.*\n\n———\n*DIGITE 8 PARA VOLTAR AO MENU.*`;
+                        await this.sendText(chatId, billsMenu);
+                        continue;
+                    }
+
+                    // Cobrança selecionada válida
+                    const selectedBill = ctx.bills[selectedNum - 1];
+                    
+                    // Atualiza userStates com o billId escolhido
+                    this.userStates.set(chatId, {
+                        ...ctx,
+                        billId: selectedBill.id
+                    });
+
+                    // Formata data e valor para exibição
+                    const formatDate = (dateStr) => {
+                        try {
+                            if (!dateStr) return 'Data inválida';
+                            
+                            // Se for string no formato ISO (YYYY-MM-DD ou YYYY-MM-DDTHH:mm:ss)
+                            if (typeof dateStr === 'string' && /^\d{4}-\d{2}-\d{2}/.test(dateStr)) {
+                                // Extrai dia, mês e ano diretamente da string (ignora timezone)
+                                const parts = dateStr.split('T')[0].split('-');
+                                if (parts.length === 3) {
+                                    const year = parts[0];
+                                    const month = parts[1];
+                                    const day = parts[2];
+                                    return `${day}/${month}/${year}`;
+                                }
+                            }
+                            
+                            // Fallback: usa Date no timezone local (não UTC)
+                            // Se a API retorna data sem timezone, assume timezone local
+                            const date = new Date(dateStr);
+                            if (isNaN(date.getTime())) return 'Data inválida';
+                            
+                            // Usa métodos locais (não UTC) para preservar o dia correto
+                            const day = String(date.getDate()).padStart(2, '0');
+                            const month = String(date.getMonth() + 1).padStart(2, '0');
+                            const year = date.getFullYear();
+                            return `${day}/${month}/${year}`;
+                        } catch {
+                            return 'Data inválida';
+                        }
+                    };
+
+                    const formatValue = (value) => {
+                        try {
+                            const num = parseFloat(value) || 0;
+                            return `R$ ${num.toFixed(2).replace('.', ',')}`;
+                        } catch {
+                            return 'R$ 0,00';
+                        }
+                    };
+
+                    // Mostra menu PIX/Boleto para a cobrança escolhida
+                    const paymentOptionMsg = `*Cobrança selecionada:*
+
+📅 *Vencimento:* ${formatDate(selectedBill.dataVencimento)}
+💰 *Valor:* ${formatValue(selectedBill.valor)}
+
+Como você deseja pagar?
+
+*1️⃣ PIX* (ou digite *pix*)
+
+*2️⃣ BOLETO*
+
+⏱️ *Liberação em até 5 minutos após o pagamento*
+
+———
+Digite o *número* da opção ou *8* para voltar ao menu.`;
+
+                    this.setConversationContext(chatId, {
+                        currentMenu: 'payment',
+                        currentStep: 'waiting_payment_option'
+                    });
+
+                    await this.sendText(chatId, paymentOptionMsg);
+                    continue;
+                }
 
                 // Verifica se está aguardando escolha entre PIX e boleto
                 if (context.currentMenu === 'payment' && context.currentStep === 'waiting_payment_option') {
@@ -731,6 +1430,42 @@ Digite o *número* da opção ou envie *8* para voltar ao menu.`;
         ];
         return greetings.includes(normalizedText);
     }
+    
+    /**
+     * Verifica se a mensagem COMEÇA com saudação (mesmo que tenha mais texto depois)
+     */
+    startsWithGreeting(normalizedText) {
+        if (!normalizedText) return false;
+        
+        // Lista de saudações (sem acentos, minúsculas)
+        const greetings = [
+            'oi', 'oie', 'oii', 'oiii', 'ola', 'olaa', 'olaaa',
+            'bom dia', 'bomdia', 'boa tarde', 'boatarde',
+            'boa noite', 'boanoite'
+        ];
+        
+        // Remove espaços/pontuação do início
+        const cleaned = normalizedText.trim();
+        
+        // Verifica se é exatamente uma saudação
+        if (greetings.includes(cleaned)) {
+            return true;
+        }
+        
+        // Verifica se COMEÇA com saudação (seguida de espaço, ponto, vírgula, etc)
+        for (const greeting of greetings) {
+            // Verifica padrões: "oi ", "oi.", "oi,", "bom dia ", "bom dia,", etc
+            if (cleaned.startsWith(greeting + ' ') || 
+                cleaned.startsWith(greeting + '.') || 
+                cleaned.startsWith(greeting + ',') ||
+                cleaned.startsWith(greeting + '!') ||
+                cleaned.startsWith(greeting + '?')) {
+                return true;
+            }
+        }
+        
+        return false;
+    }
 
     async handleMenuSelection(chatId, normalizedText, context = null) {
         const isMainMenu = !context || context.currentMenu === 'main' || !context.currentMenu;
@@ -1014,29 +1749,28 @@ Digite o número da opção ou *8* para voltar ao menu.`;
                 return;
             }
 
-            // Filtra boletos: aceita apenas não pagos (dataPagamento null e status indica em aberto)
+            // Filtra cobranças: aceita APENAS não pagas (dataPagamento === null)
             const filteredBills = bills.filter(bill => {
-                // Aceita boleto que tenha ID válido
+                // Aceita cobrança que tenha ID válido
                 if (!bill || !bill.id) {
                     return false;
                 }
 
-                // Verifica se está pago pelo campo dataPagamento
+                // CRITÉRIO PRINCIPAL: Verifica se está pago pelo campo dataPagamento
+                // Se dataPagamento não for null/undefined/string vazia, significa que foi pago
                 const dataPagamento = bill.dataPagamento || bill.data_pagamento;
                 if (dataPagamento !== null && dataPagamento !== undefined && dataPagamento !== '') {
-                    return false;
+                    return false; // Já foi pago, exclui da lista
                 }
 
-                // Verifica se está pago pelo campo status
+                // Verificação adicional: se statusDescricao indica pago, também exclui (segurança extra)
                 const statusDescricao = (bill.statusDescricao || bill.status_descricao || '').toLowerCase();
-
-                // Status 0 geralmente significa "Em Aberto", outros valores podem indicar pago
-                // Mas vamos ser conservadores: se statusDescricao indica pago, exclui
                 if (statusDescricao.includes('pago') || statusDescricao.includes('quitado') ||
                     statusDescricao.includes('liquidado') || statusDescricao.includes('cancelado')) {
-                    return false;
+                    return false; // Status indica pago, exclui
                 }
 
+                // Se passou nas verificações acima, é uma cobrança não paga (dataPagamento === null)
                 return true;
             });
 
@@ -1052,7 +1786,7 @@ Digite o número da opção ou *8* para voltar ao menu.`;
             const currentMonth = now.getMonth();
             const currentYear = now.getFullYear();
 
-            const latest = filteredBills.sort((a, b) => {
+            const sortedBills = filteredBills.sort((a, b) => {
                 const dateA = new Date(a.dataVencimento || a.data_vencimento || a.vencimento || 0);
                 const dateB = new Date(b.dataVencimento || b.data_vencimento || b.vencimento || 0);
 
@@ -1085,19 +1819,75 @@ Digite o número da opção ou *8* para voltar ao menu.`;
 
                 // Dentro da mesma categoria, ordena do mais recente para o mais antigo
                 return timeB - timeA;
-            })[0];
+            });
 
-            // Guarda contexto do usuário (clientId, serviceId, billId)
+            // Formata data para exibição
+            const formatDate = (dateStr) => {
+                try {
+                    if (!dateStr) return 'Data inválida';
+                    
+                    // Se for string no formato ISO (YYYY-MM-DD ou YYYY-MM-DDTHH:mm:ss)
+                    if (typeof dateStr === 'string' && /^\d{4}-\d{2}-\d{2}/.test(dateStr)) {
+                        // Extrai dia, mês e ano diretamente da string (ignora timezone)
+                        const parts = dateStr.split('T')[0].split('-');
+                        if (parts.length === 3) {
+                            const year = parts[0];
+                            const month = parts[1];
+                            const day = parts[2];
+                            return `${day}/${month}/${year}`;
+                        }
+                    }
+                    
+                    // Fallback: usa Date no timezone local (não UTC)
+                    // Se a API retorna data sem timezone, assume timezone local
+                    const date = new Date(dateStr);
+                    if (isNaN(date.getTime())) return 'Data inválida';
+                    
+                    // Usa métodos locais (não UTC) para preservar o dia correto
+                    const day = String(date.getDate()).padStart(2, '0');
+                    const month = String(date.getMonth() + 1).padStart(2, '0');
+                    const year = date.getFullYear();
+                    return `${day}/${month}/${year}`;
+                } catch {
+                    return 'Data inválida';
+                }
+            };
+
+            // Formata valor para exibição
+            const formatValue = (value) => {
+                try {
+                    const num = parseFloat(value) || 0;
+                    return `R$ ${num.toFixed(2).replace('.', ',')}`;
+                } catch {
+                    return 'R$ 0,00';
+                }
+            };
+
+            // Guarda contexto do usuário com todas as cobranças disponíveis
             this.userStates.set(chatId, {
                 clientId: cli.id,
                 serviceId: activeService.id,
-                billId: latest.id,
+                bills: sortedBills.map(bill => ({
+                    id: bill.id,
+                    dataVencimento: bill.dataVencimento || bill.data_vencimento || bill.vencimento,
+                    valor: bill.valor || bill.valorTotal || bill.valor_total || 0
+                })),
                 clientName: cli?.nome || 'cliente',
                 lastActivity: Date.now()
             });
 
-            // PERGUNTA se quer PIX ou BOLETO
-            const paymentOptionMsg = `*CPF CONFIRMADO: ${cli?.nome || 'Cliente'}*
+            // Se tem apenas uma cobrança, vai direto para escolha PIX/Boleto
+            if (sortedBills.length === 1) {
+                const bill = sortedBills[0];
+                this.userStates.set(chatId, {
+                    ...this.userStates.get(chatId),
+                    billId: bill.id
+                });
+
+                const paymentOptionMsg = `*CPF CONFIRMADO: ${cli?.nome || 'Cliente'}*
+
+📅 *Vencimento:* ${formatDate(bill.dataVencimento || bill.data_vencimento || bill.vencimento)}
+💰 *Valor:* ${formatValue(bill.valor || bill.valorTotal || bill.valor_total)}
 
 Como você deseja pagar?
 
@@ -1110,13 +1900,34 @@ Como você deseja pagar?
 ———
 Digite o *número* da opção ou *8* para voltar ao menu.`;
 
-            // Atualiza contexto: aguardando escolha PIX ou boleto
-            this.setConversationContext(chatId, {
-                currentMenu: 'payment',
-                currentStep: 'waiting_payment_option'
+                this.setConversationContext(chatId, {
+                    currentMenu: 'payment',
+                    currentStep: 'waiting_payment_option'
+                });
+
+                await this.sendText(chatId, paymentOptionMsg);
+                return;
+            }
+
+            // Se tem múltiplas cobranças, mostra menu para escolher
+            let billsMenu = `*CPF CONFIRMADO: ${cli?.nome || 'Cliente'}*\n\n`;
+            billsMenu += `*Selecione qual cobrança deseja pagar:*\n\n`;
+
+            sortedBills.forEach((bill, index) => {
+                const num = index + 1;
+                const vencimento = formatDate(bill.dataVencimento || bill.data_vencimento || bill.vencimento);
+                billsMenu += `*${num}️⃣* Vencimento: *${vencimento}*\n`;
             });
 
-            await this.sendText(chatId, paymentOptionMsg);
+                        billsMenu += `\n———\n*DIGITE O NÚMERO DA OPÇÃO COM A DATA DA COBRANÇA DESEJADA.*\n\n———\n*DIGITE 8 PARA VOLTAR AO MENU.*`;
+
+            // Atualiza contexto: aguardando escolha da cobrança
+            this.setConversationContext(chatId, {
+                currentMenu: 'payment',
+                currentStep: 'waiting_bill_selection'
+            });
+
+            await this.sendText(chatId, billsMenu);
             return;
 
         } catch (e) {
@@ -1361,6 +2172,18 @@ Digite o *número* da opção ou *8* para voltar ao menu.`;
 
     async stop() {
         try {
+            // Cancela restart pendente se existir
+            if (this.restartTimeout) {
+                clearTimeout(this.restartTimeout);
+                this.restartTimeout = null;
+            }
+            
+            // Para keepalive se estiver rodando
+            if (this.keepAliveInterval) {
+                clearInterval(this.keepAliveInterval);
+                this.keepAliveInterval = null;
+            }
+            
             if (this.sock?.ev) {
                 this.sock.ev.removeAllListeners('connection.update');
                 this.sock.ev.removeAllListeners('creds.update');
@@ -1374,6 +2197,8 @@ Digite o *número* da opção ou *8* para voltar ao menu.`;
         } finally {
             this.sock = null;
             this.client = null;
+            this.isRestarting = false;
+            this.started = false;
             this.started = false;
         }
     }

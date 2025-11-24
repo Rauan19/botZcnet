@@ -111,7 +111,21 @@ class ContextAnalyzer {
         this.nlp.addDocument('pt', 'amanhã vou pagar', 'payment.presential');
         this.nlp.addDocument('pt', 'vou pagar pessoalmente', 'payment.presential');
 
-        // Padrões de conversa casual (deve ignorar)
+        // Padrões de problemas técnicos de internet (PRIORIDADE - não é saudação!)
+        this.nlp.addDocument('pt', 'bom dia estou sem internet', 'support.dropped');
+        this.nlp.addDocument('pt', 'boa tarde estou sem internet', 'support.dropped');
+        this.nlp.addDocument('pt', 'boa noite estou sem internet', 'support.dropped');
+        this.nlp.addDocument('pt', 'bom dia sem internet', 'support.dropped');
+        this.nlp.addDocument('pt', 'oi estou sem internet', 'support.dropped');
+        this.nlp.addDocument('pt', 'olá estou sem internet', 'support.dropped');
+        this.nlp.addDocument('pt', 'bom dia internet caiu', 'support.dropped');
+        this.nlp.addDocument('pt', 'bom dia sem conexão', 'support.dropped');
+        this.nlp.addDocument('pt', 'bom dia internet parou', 'support.dropped');
+        this.nlp.addDocument('pt', 'bom dia internet não funciona', 'support.dropped');
+        this.nlp.addDocument('pt', 'bom dia internet lenta', 'support.slow');
+        this.nlp.addDocument('pt', 'bom dia internet travando', 'support.technical');
+        
+        // Padrões de conversa casual (deve ignorar APENAS se não tiver problema técnico)
         this.nlp.addDocument('pt', 'bom dia', 'casual.greeting');
         this.nlp.addDocument('pt', 'boa tarde', 'casual.greeting');
         this.nlp.addDocument('pt', 'boa noite', 'casual.greeting');
@@ -134,6 +148,9 @@ class ContextAnalyzer {
         this.nlp.addAnswer('pt', 'payment.request', 'Oferecer boleto/PIX');
         this.nlp.addAnswer('pt', 'payment.confirm', 'Confirmar pagamento');
         this.nlp.addAnswer('pt', 'payment.presential', 'Ignorar mensagem');
+        this.nlp.addAnswer('pt', 'support.dropped', 'Problema técnico - internet caiu');
+        this.nlp.addAnswer('pt', 'support.slow', 'Problema técnico - internet lenta');
+        this.nlp.addAnswer('pt', 'support.technical', 'Problema técnico geral');
         this.nlp.addAnswer('pt', 'casual.greeting', 'Ignorar conversa casual');
 
         // Treina o modelo
@@ -217,10 +234,63 @@ class ContextAnalyzer {
             const currentIntent = this.analyzeCombinedIntent(currentMessage.toLowerCase(), [currentMessage]);
             const contextIntent = this.analyzeCombinedIntent(contextText, allMessages);
             
-            // Verifica se NLP detectou conversa casual
-            if (nlpResult.intent === 'casual.greeting') {
+            // Verifica se NLP detectou problemas técnicos (PRIORIDADE sobre saudação)
+            if (nlpResult.intent === 'support.dropped') {
                 return {
-                    intent: 'unclear', // Ignora conversas casuais
+                    intent: 'support_dropped',
+                    confidence: nlpResult.score || 0.8,
+                    nlpIntent: nlpResult.intent,
+                    messagesCount: allMessages.length,
+                    contextText,
+                    recentMessages: recentMessages.length
+                };
+            }
+            if (nlpResult.intent === 'support.slow') {
+                return {
+                    intent: 'support_slow',
+                    confidence: nlpResult.score || 0.8,
+                    nlpIntent: nlpResult.intent,
+                    messagesCount: allMessages.length,
+                    contextText,
+                    recentMessages: recentMessages.length
+                };
+            }
+            if (nlpResult.intent === 'support.technical') {
+                return {
+                    intent: 'support_technical',
+                    confidence: nlpResult.score || 0.8,
+                    nlpIntent: nlpResult.intent,
+                    messagesCount: allMessages.length,
+                    contextText,
+                    recentMessages: recentMessages.length
+                };
+            }
+            
+            // Verifica se NLP detectou conversa casual (só ignora se NÃO tiver problema técnico no contexto)
+            if (nlpResult.intent === 'casual.greeting') {
+                // Verifica se há problemas técnicos no contexto mesmo com saudação
+                const hasTechnicalIssue = contextText.includes('sem internet') || 
+                                         contextText.includes('internet caiu') ||
+                                         contextText.includes('sem conexão') ||
+                                         contextText.includes('internet parou') ||
+                                         contextText.includes('internet não funciona') ||
+                                         contextText.includes('internet lenta') ||
+                                         contextText.includes('internet travando');
+                
+                if (hasTechnicalIssue) {
+                    // Tem problema técnico mesmo com saudação - não ignora!
+                    return {
+                        intent: 'support_dropped', // Assume problema de conexão
+                        confidence: 0.7,
+                        nlpIntent: nlpResult.intent,
+                        messagesCount: allMessages.length,
+                        contextText,
+                        recentMessages: recentMessages.length
+                    };
+                }
+                
+                return {
+                    intent: 'unclear', // Ignora conversas casuais sem problema técnico
                     confidence: nlpResult.score || 0,
                     nlpIntent: nlpResult.intent,
                     messagesCount: allMessages.length,
@@ -328,12 +398,16 @@ class ContextAnalyzer {
             return 'support_slow';
         }
         
-        // 2.2 Problemas técnicos de internet - Internet caiu
+        // 2.2 Problemas técnicos de internet - Internet caiu (PRIORIDADE - detecta mesmo com saudação)
         const droppedInternetKeywords = [
             'internet caiu', 'internet cai', 'caiu a internet', 'sem internet',
             'internet parou', 'parou de funcionar', 'sem sinal', 'sem conexão',
-            'wi-fi não funciona', 'wifi não funciona', 'wi fi não funciona'
+            'wi-fi não funciona', 'wifi não funciona', 'wi fi não funciona',
+            'estou sem internet', 'estou sem conexão', 'não tenho internet',
+            'internet não está funcionando', 'internet não funciona',
+            'sem acesso à internet', 'sem acesso internet'
         ];
+        // Verifica se há problema técnico mesmo quando há saudação no início
         if (droppedInternetKeywords.some(kw => text.includes(kw))) {
             return 'support_dropped';
         }

@@ -7,6 +7,10 @@ yarn-error.log*
 # Arquivos de autenticação do WhatsApp
 .wwebjs_auth/
 auth_info_baileys/
+tokens-baileys*/
+tokens-baileys1/
+tokens-bot1/
+tokens-bot2/
 
 # Arquivos temporários
 temp/
