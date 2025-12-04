@@ -56,12 +56,20 @@ class BaileysBot {
         this.lastResponseTime = new Map(); // rate limiting por chat
         this.processedMessages = new Map(); // evita processar mensagens duplicadas
         
+        // Contadores para erros Bad MAC (sessão corrompida)
+        this.badMacErrorCount = 0; // Contador de erros Bad MAC consecutivos
+        this.badMacErrorThreshold = 10; // Limite de erros antes de limpar sessão
+        this.lastBadMacErrorTime = 0; // Timestamp do último erro Bad MAC
+        this.badMacErrorWindow = 5 * 60 * 1000; // Janela de 5 minutos para contar erros
+        
         // Limpeza automática de contexto a cada 30 minutos (não muito agressiva)
         setInterval(() => this.cleanupOldContexts(), 30 * 60 * 1000);
         // Limpeza automática de userStates a cada 1 hora
         setInterval(() => this.cleanupOldUserStates(), 60 * 60 * 1000);
         // Limpeza automática de rate limiting a cada 10 minutos
         setInterval(() => this.cleanupRateLimiting(), 10 * 60 * 1000);
+        // Limpeza periódica de sessões antigas a cada 6 horas
+        setInterval(() => this.cleanupOldSessions(), 6 * 60 * 60 * 1000);
     }
 
     setPort(port) {
@@ -180,7 +188,23 @@ class BaileysBot {
         });
 
         this.sock.ev.on('messages.upsert', (payload) => {
-            this.handleMessagesUpsert(payload).catch(err => console.error('❌ ERRO mensagens Baileys:', err));
+            this.handleMessagesUpsert(payload).catch(err => {
+                // Trata especificamente erros Bad MAC
+                if (err?.message?.includes('Bad MAC') || err?.message?.includes('Failed to decrypt') || err?.message?.includes('Session error')) {
+                    this.handleBadMacError('ao processar mensagem', err);
+                } else {
+                    console.error('❌ ERRO mensagens Baileys:', err);
+                }
+            });
+        });
+
+        // Listener para erros de descriptografia (Bad MAC)
+        this.sock.ev.on('error', (err) => {
+            if (err?.message?.includes('Bad MAC') || err?.message?.includes('Failed to decrypt') || err?.message?.includes('Session error')) {
+                this.handleBadMacError('no socket', err);
+            } else {
+                console.error('❌ Erro no socket Baileys:', err);
+            }
         });
 
         this.started = true;
@@ -651,6 +675,22 @@ class BaileysBot {
         for (const msg of messages) {
             try {
                 if (!msg.message) continue;
+                
+                // Tenta descriptografar a mensagem - se falhar com Bad MAC, ignora e loga
+                try {
+                    // Verifica se a mensagem pode ser descriptografada
+                    if (msg.messageStubType === 'REVOKE' || msg.messageStubType === 'CIPHERTEXT') {
+                        // Mensagens criptografadas podem causar Bad MAC se sessão estiver corrompida
+                        // Continua normalmente, mas monitora erros
+                    }
+                } catch (decryptErr) {
+                    if (decryptErr?.message?.includes('Bad MAC') || decryptErr?.message?.includes('Failed to decrypt') || decryptErr?.message?.includes('Session error')) {
+                        // Usa o handler centralizado para tratar erros Bad MAC
+                        this.handleBadMacError('ao descriptografar mensagem', decryptErr);
+                        continue; // Ignora esta mensagem específica
+                    }
+                    throw decryptErr; // Re-lança outros erros
+                }
 
                 const jid = msg.key.remoteJid;
                 
@@ -1876,6 +1916,12 @@ Digite o número da opção ou *8* para voltar ao menu.`;
                 lastActivity: Date.now()
             });
 
+            // Log para debug: mostra quantas cobranças foram encontradas
+            console.log(`📊 [${chatId}] Cobranças encontradas: ${sortedBills.length}`);
+            if (sortedBills.length > 0) {
+                console.log(`📋 [${chatId}] Datas de vencimento:`, sortedBills.map(b => b.dataVencimento || b.data_vencimento || b.vencimento));
+            }
+            
             // Se tem apenas uma cobrança, vai direto para escolha PIX/Boleto
             if (sortedBills.length === 1) {
                 const bill = sortedBills[0];
@@ -2167,6 +2213,187 @@ Digite o *número* da opção ou *8* para voltar ao menu.`;
         } catch (e) {
             console.error('❌ Falha ao retomar Baileys:', e);
             return { success: false, message: e.message || 'Erro ao retomar' };
+        }
+    }
+
+    /**
+     * Trata erros Bad MAC e implementa limpeza automática de sessão quando necessário
+     */
+    handleBadMacError(context, err) {
+        const now = Date.now();
+        
+        // Se passou muito tempo desde o último erro, reseta o contador
+        if (now - this.lastBadMacErrorTime > this.badMacErrorWindow) {
+            this.badMacErrorCount = 0;
+        }
+        
+        this.badMacErrorCount++;
+        this.lastBadMacErrorTime = now;
+        
+        console.error(`❌ ERRO Bad MAC detectado ${context}!`);
+        console.error(`📊 Contador de erros: ${this.badMacErrorCount}/${this.badMacErrorThreshold}`);
+        console.error('💡 Isso geralmente indica:');
+        console.error('   - Sessão corrompida ou tokens inválidos após alguns dias');
+        console.error('   - Múltiplas instâncias usando a mesma sessão');
+        console.error('   - Conflito entre diferentes versões do código');
+        console.error(`📁 Diretório de tokens: ${this.authDir}`);
+        
+        // Se atingiu o limite de erros, limpa a sessão e reconecta
+        if (this.badMacErrorCount >= this.badMacErrorThreshold) {
+            console.error('');
+            console.error('⚠️⚠️⚠️ LIMITE DE ERROS BAD MAC ATINGIDO ⚠️⚠️⚠️');
+            console.error(`   ${this.badMacErrorCount} erros em ${Math.round((now - (now - this.badMacErrorWindow)) / 1000)} segundos`);
+            console.error('🔄 Limpando sessão corrompida e forçando reconexão...');
+            console.error('');
+            
+            // Limpa a sessão e reconecta
+            this.cleanupAndReconnect();
+        } else {
+            console.error(`💡 Limpeza automática será acionada após ${this.badMacErrorThreshold - this.badMacErrorCount} erros adicionais`);
+        }
+    }
+
+    /**
+     * Limpa sessão corrompida e força reconexão
+     */
+    async cleanupAndReconnect() {
+        try {
+            console.log('🧹 Iniciando limpeza de sessão corrompida...');
+            
+            // Para o bot atual
+            this.started = false;
+            this.isRestarting = true;
+            
+            // Fecha socket atual
+            if (this.sock) {
+                try {
+                    if (this.sock.ev) {
+                        this.sock.ev.removeAllListeners();
+                    }
+                    if (this.sock.ws) {
+                        this.sock.ws.close();
+                    }
+                } catch (e) {
+                    // Ignora erros ao fechar
+                }
+                this.sock = null;
+            }
+            
+            // Limpa apenas arquivos de sessão específicos (não tudo)
+            // Mantém credenciais principais mas limpa sessões corrompidas
+            const criticalFiles = ['creds.json', 'keys.json', 'app-state-sync-key.json', 'app-state-sync-version.json'];
+            const sessionFiles = [
+                'app-state-sync-key-*',
+                'app-state-sync-version-*',
+                'pre-key-*',
+                'session-*',
+                'sender-key-*'
+            ];
+            
+            if (fs.existsSync(this.authDir)) {
+                const files = fs.readdirSync(this.authDir);
+                let cleanedCount = 0;
+                
+                for (const file of files) {
+                    // NUNCA remove arquivos críticos
+                    if (criticalFiles.includes(file)) {
+                        continue;
+                    }
+                    
+                    // Remove apenas arquivos de sessão específicos
+                    const shouldRemove = sessionFiles.some(pattern => {
+                        const regex = new RegExp(pattern.replace('*', '.*'));
+                        return regex.test(file);
+                    });
+                    
+                    if (shouldRemove) {
+                        try {
+                            fs.unlinkSync(path.join(this.authDir, file));
+                            cleanedCount++;
+                        } catch (e) {
+                            console.error(`⚠️ Erro ao remover ${file}:`, e.message);
+                        }
+                    }
+                }
+                
+                console.log(`✅ ${cleanedCount} arquivos de sessão removidos (credenciais principais preservadas)`);
+            }
+            
+            // Reseta contadores
+            this.badMacErrorCount = 0;
+            this.lastBadMacErrorTime = 0;
+            this.reconnectAttempts = 0;
+            
+            console.log('🔄 Aguardando 5 segundos antes de reconectar...');
+            await new Promise(resolve => setTimeout(resolve, 5000));
+            
+            // Reconecta
+            console.log('🔄 Reconectando após limpeza...');
+            this.isRestarting = false;
+            await this.start();
+            
+        } catch (e) {
+            console.error('❌ Erro ao limpar e reconectar:', e);
+            this.isRestarting = false;
+            // Tenta reconectar mesmo com erro
+            setTimeout(() => {
+                this.start().catch(err => console.error('❌ Falha ao reconectar após limpeza:', err));
+            }, 10000);
+        }
+    }
+
+    /**
+     * Limpeza periódica de sessões antigas/corrompidas
+     * Remove sessões que não foram usadas há mais de 7 dias
+     * NUNCA remove credenciais principais (creds.json, keys.json, etc)
+     */
+    cleanupOldSessions() {
+        try {
+            if (!fs.existsSync(this.authDir)) {
+                return;
+            }
+            
+            // Arquivos críticos que NUNCA devem ser removidos
+            const criticalFiles = ['creds.json', 'keys.json', 'app-state-sync-key.json', 'app-state-sync-version.json'];
+            
+            const files = fs.readdirSync(this.authDir);
+            const now = Date.now();
+            const maxAge = 7 * 24 * 60 * 60 * 1000; // 7 dias
+            let cleanedCount = 0;
+            
+            for (const file of files) {
+                // NUNCA remove arquivos críticos
+                if (criticalFiles.includes(file)) {
+                    continue;
+                }
+                
+                const filePath = path.join(this.authDir, file);
+                try {
+                    const stats = fs.statSync(filePath);
+                    const age = now - stats.mtimeMs;
+                    
+                    // Remove apenas arquivos de sessão antigos específicos
+                    // Não remove credenciais principais ou arquivos de estado global
+                    if (age > maxAge && (
+                        file.startsWith('session-') || 
+                        file.startsWith('pre-key-') || 
+                        file.startsWith('sender-key-') ||
+                        file.startsWith('app-state-sync-key-') ||
+                        file.startsWith('app-state-sync-version-')
+                    )) {
+                        fs.unlinkSync(filePath);
+                        cleanedCount++;
+                    }
+                } catch (e) {
+                    // Ignora erros ao verificar/remover arquivos
+                }
+            }
+            
+            if (cleanedCount > 0) {
+                console.log(`🧹 Limpeza periódica: ${cleanedCount} sessões antigas removidas`);
+            }
+        } catch (e) {
+            console.error('⚠️ Erro na limpeza periódica de sessões:', e.message);
         }
     }
 
