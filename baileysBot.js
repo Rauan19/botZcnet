@@ -24,10 +24,37 @@ class BaileysBot {
         this.initialized = false; // Indica se o bot foi inicializado (mesmo que tenha erro depois)
         this.qrString = null;
         this.authState = null; // Estado de autenticação para verificar credenciais
+        // Logger silencioso - apenas erros críticos
+        // Níveis: trace, debug, info, warn, error, fatal
+        // 'silent' desabilita completamente, 'fatal' mostra apenas erros fatais
         this.logger = P({
-            level: process.env.BAILEYS_LOG_LEVEL || 'fatal',
+            level: process.env.BAILEYS_LOG_LEVEL || 'silent',
             timestamp: () => `,"time":"${new Date().toISOString()}"`
         });
+        
+        // Intercepta stderr para capturar erros Bad MAC do libsignal que não são capturados pelos handlers
+        // Isso é necessário porque o libsignal escreve diretamente no stderr
+        this.originalStderrWrite = process.stderr.write.bind(process.stderr);
+        const self = this;
+        process.stderr.write = function(chunk, encoding, fd) {
+            const message = chunk ? chunk.toString() : '';
+            if (message.includes('Bad MAC') || message.includes('Session error')) {
+                // Cria um erro simulado para usar o handler existente
+                const error = new Error(message.trim().substring(0, 200)); // Limita tamanho
+                // Usa setImmediate para evitar problemas de timing e não bloquear
+                setImmediate(() => {
+                    try {
+                        if (self && typeof self.handleBadMacError === 'function') {
+                            self.handleBadMacError('do libsignal (stderr)', error);
+                        }
+                    } catch (e) {
+                        // Ignora erros no handler para não causar loop
+                    }
+                });
+            }
+            // Sempre chama o write original para não quebrar o fluxo
+            return self.originalStderrWrite(chunk, encoding, fd);
+        };
         
         // Diretório de autenticação único por instância
         // Usa variável de ambiente BAILEYS_SESSION_ID ou porta como identificador
@@ -58,9 +85,10 @@ class BaileysBot {
         
         // Contadores para erros Bad MAC (sessão corrompida)
         this.badMacErrorCount = 0; // Contador de erros Bad MAC consecutivos
-        this.badMacErrorThreshold = 10; // Limite de erros antes de limpar sessão
+        this.badMacErrorThreshold = 5; // Limite de erros antes de limpar sessão (reduzido para acionar mais rápido)
         this.lastBadMacErrorTime = 0; // Timestamp do último erro Bad MAC
-        this.badMacErrorWindow = 5 * 60 * 1000; // Janela de 5 minutos para contar erros
+        this.badMacErrorWindow = 3 * 60 * 1000; // Janela de 3 minutos para contar erros (reduzida)
+        
         
         // Limpeza automática de contexto a cada 30 minutos (não muito agressiva)
         setInterval(() => this.cleanupOldContexts(), 30 * 60 * 1000);
@@ -181,9 +209,9 @@ class BaileysBot {
         // Log adicional para verificar se eventos estão sendo registrados
         console.log('📡 Event listeners registrados. Aguardando eventos de conexão...');
 
-        // Salva credenciais sempre que atualizar
+        // Salva credenciais sempre que atualizar (silenciosamente)
         this.sock.ev.on('creds.update', () => {
-            console.log('💾 Salvando credenciais atualizadas...');
+            // Log removido para reduzir verbosidade - credenciais são salvas automaticamente
             saveCreds();
         });
 
@@ -2220,6 +2248,14 @@ Digite o *número* da opção ou *8* para voltar ao menu.`;
      * Trata erros Bad MAC e implementa limpeza automática de sessão quando necessário
      */
     handleBadMacError(context, err) {
+        // Proteção contra chamadas antes da inicialização completa
+        if (typeof this.badMacErrorCount === 'undefined') {
+            this.badMacErrorCount = 0;
+            this.badMacErrorThreshold = 5;
+            this.lastBadMacErrorTime = 0;
+            this.badMacErrorWindow = 3 * 60 * 1000;
+        }
+        
         const now = Date.now();
         
         // Se passou muito tempo desde o último erro, reseta o contador
@@ -2242,12 +2278,15 @@ Digite o *número* da opção ou *8* para voltar ao menu.`;
         if (this.badMacErrorCount >= this.badMacErrorThreshold) {
             console.error('');
             console.error('⚠️⚠️⚠️ LIMITE DE ERROS BAD MAC ATINGIDO ⚠️⚠️⚠️');
-            console.error(`   ${this.badMacErrorCount} erros em ${Math.round((now - (now - this.badMacErrorWindow)) / 1000)} segundos`);
+            const timeWindow = Math.round((now - (this.lastBadMacErrorTime - this.badMacErrorWindow)) / 1000);
+            console.error(`   ${this.badMacErrorCount} erros em ${timeWindow} segundos`);
             console.error('🔄 Limpando sessão corrompida e forçando reconexão...');
             console.error('');
             
-            // Limpa a sessão e reconecta
-            this.cleanupAndReconnect();
+            // Limpa a sessão e reconecta (não bloqueia)
+            this.cleanupAndReconnect().catch(e => {
+                console.error('❌ Erro ao limpar e reconectar:', e);
+            });
         } else {
             console.error(`💡 Limpeza automática será acionada após ${this.badMacErrorThreshold - this.badMacErrorCount} erros adicionais`);
         }
@@ -2399,6 +2438,11 @@ Digite o *número* da opção ou *8* para voltar ao menu.`;
 
     async stop() {
         try {
+            // Restaura stderr original
+            if (this.originalStderrWrite) {
+                process.stderr.write = this.originalStderrWrite;
+            }
+            
             // Cancela restart pendente se existir
             if (this.restartTimeout) {
                 clearTimeout(this.restartTimeout);
@@ -2425,7 +2469,6 @@ Digite o *número* da opção ou *8* para voltar ao menu.`;
             this.sock = null;
             this.client = null;
             this.isRestarting = false;
-            this.started = false;
             this.started = false;
         }
     }
