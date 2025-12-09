@@ -46,3 +46,5 @@ Se você editar `database.js` manualmente, o **bot1 vai parar de funcionar** por
 
 
 
+
+

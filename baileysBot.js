@@ -24,20 +24,62 @@ class BaileysBot {
         this.initialized = false; // Indica se o bot foi inicializado (mesmo que tenha erro depois)
         this.qrString = null;
         this.authState = null; // Estado de autenticação para verificar credenciais
-        // Logger silencioso - apenas erros críticos
-        // Níveis: trace, debug, info, warn, error, fatal
-        // 'silent' desabilita completamente, 'fatal' mostra apenas erros fatais
+        // Logger COMPLETAMENTE silencioso - desativa TODOS os logs do Baileys
+        // Isso é crítico para evitar logs enormes de criptografia que enchem o heap
+        // Níveis: trace, debug, info, warn, error, fatal, silent
+        // 'silent' desabilita completamente TODOS os logs
+        const logLevel = process.env.BAILEYS_LOG_LEVEL || 'silent';
         this.logger = P({
-            level: process.env.BAILEYS_LOG_LEVEL || 'silent',
-            timestamp: () => `,"time":"${new Date().toISOString()}"`
+            level: logLevel === 'silent' ? 'silent' : logLevel,
+            // Desativa timestamp para reduzir overhead
+            timestamp: false,
+            // Reduz ao mínimo possível
+            serializers: {},
+            // Não escreve em arquivo
+            transport: undefined
         });
+        
+        // Garante que mesmo se houver algum log, não vai para stdout/stderr
+        if (logLevel === 'silent') {
+            // Cria logger que não escreve nada
+            this.logger = {
+                trace: () => {},
+                debug: () => {},
+                info: () => {},
+                warn: () => {},
+                error: () => {},
+                fatal: () => {},
+                child: () => this.logger,
+                level: 'silent'
+            };
+        }
         
         // Intercepta stderr para capturar erros Bad MAC do libsignal que não são capturados pelos handlers
         // Isso é necessário porque o libsignal escreve diretamente no stderr
+        // Também filtra mensagens normais que não são erros reais
         this.originalStderrWrite = process.stderr.write.bind(process.stderr);
+        this.stderrFilterCount = 0; // Contador para reduzir spam de logs
+        this.lastStderrLogTime = 0; // Timestamp do último log filtrado
         const self = this;
         process.stderr.write = function(chunk, encoding, fd) {
             const message = chunk ? chunk.toString() : '';
+            
+            // Filtra mensagens normais do libsignal que não são erros
+            const normalMessages = [
+                'Closing open session',
+                'Closing stale open session',
+                'in favor of incoming prekey bundle',
+                'for new outgoing prekey bundle'
+            ];
+            
+            const isNormalMessage = normalMessages.some(normal => message.includes(normal));
+            
+            // Se for mensagem normal, não escreve no stderr (reduz spam)
+            if (isNormalMessage) {
+                return true; // Retorna true para indicar que foi "escrito" mas não escreve nada
+            }
+            
+            // Trata erros Bad MAC reais
             if (message.includes('Bad MAC') || message.includes('Session error')) {
                 // Cria um erro simulado para usar o handler existente
                 const error = new Error(message.trim().substring(0, 200)); // Limita tamanho
@@ -51,8 +93,18 @@ class BaileysBot {
                         // Ignora erros no handler para não causar loop
                     }
                 });
+                
+                // Reduz verbosidade: só escreve no stderr se for erro crítico ou a cada 10 erros
+                const now = Date.now();
+                self.stderrFilterCount = (self.stderrFilterCount || 0) + 1;
+                if (self.stderrFilterCount % 10 === 0 || now - (self.lastStderrLogTime || 0) > 60000) {
+                    self.lastStderrLogTime = now;
+                    return self.originalStderrWrite(chunk, encoding, fd);
+                }
+                return true; // Não escreve no stderr para reduzir spam
             }
-            // Sempre chama o write original para não quebrar o fluxo
+            
+            // Sempre chama o write original para outros tipos de mensagens
             return self.originalStderrWrite(chunk, encoding, fd);
         };
         
@@ -88,16 +140,84 @@ class BaileysBot {
         this.badMacErrorThreshold = 5; // Limite de erros antes de limpar sessão (reduzido para acionar mais rápido)
         this.lastBadMacErrorTime = 0; // Timestamp do último erro Bad MAC
         this.badMacErrorWindow = 3 * 60 * 1000; // Janela de 3 minutos para contar erros (reduzida)
+        this.lastBadMacLogTime = 0; // Timestamp do último log detalhado de Bad MAC
         
+        
+        // Tratamento global de erros não capturados - GARANTE que o bot nunca pare
+        process.on('uncaughtException', (err) => {
+            const errorMsg = err?.message || err?.toString() || '';
+            // Se for erro Bad MAC, trata mas não para o bot
+            if (errorMsg.includes('Bad MAC') || 
+                errorMsg.includes('verifyMAC') || 
+                errorMsg.includes('decryptWithSessions') ||
+                errorMsg.includes('Session error')) {
+                console.error('⚠️ Erro Bad MAC não capturado (continuando):', errorMsg.substring(0, 200));
+                if (typeof this.handleBadMacError === 'function') {
+                    try {
+                        this.handleBadMacError('erro não capturado', err);
+                    } catch (e) {
+                        // Ignora erros no handler
+                    }
+                }
+                return; // NÃO re-lança o erro
+            }
+            // Para outros erros críticos, loga mas não para o bot
+            console.error('⚠️ Erro não capturado (bot continua funcionando):', errorMsg.substring(0, 200));
+        });
+        
+        process.on('unhandledRejection', (reason, promise) => {
+            const errorMsg = reason?.message || reason?.toString() || '';
+            // Se for erro Bad MAC, trata mas não para o bot
+            if (errorMsg.includes('Bad MAC') || 
+                errorMsg.includes('verifyMAC') || 
+                errorMsg.includes('decryptWithSessions') ||
+                errorMsg.includes('Session error')) {
+                console.error('⚠️ Promise rejeitada Bad MAC (continuando):', errorMsg.substring(0, 200));
+                if (typeof this.handleBadMacError === 'function') {
+                    try {
+                        this.handleBadMacError('promise rejeitada', reason);
+                    } catch (e) {
+                        // Ignora erros no handler
+                    }
+                }
+                return; // NÃO re-lança o erro
+            }
+            // Para outros erros, loga mas não para o bot
+            console.error('⚠️ Promise rejeitada (bot continua funcionando):', errorMsg.substring(0, 200));
+        });
         
         // Limpeza automática de contexto a cada 30 minutos (não muito agressiva)
-        setInterval(() => this.cleanupOldContexts(), 30 * 60 * 1000);
+        setInterval(() => {
+            try {
+                this.cleanupOldContexts();
+            } catch (e) {
+                // Ignora erros na limpeza
+            }
+        }, 30 * 60 * 1000);
         // Limpeza automática de userStates a cada 1 hora
-        setInterval(() => this.cleanupOldUserStates(), 60 * 60 * 1000);
+        setInterval(() => {
+            try {
+                this.cleanupOldUserStates();
+            } catch (e) {
+                // Ignora erros na limpeza
+            }
+        }, 60 * 60 * 1000);
         // Limpeza automática de rate limiting a cada 10 minutos
-        setInterval(() => this.cleanupRateLimiting(), 10 * 60 * 1000);
+        setInterval(() => {
+            try {
+                this.cleanupRateLimiting();
+            } catch (e) {
+                // Ignora erros na limpeza
+            }
+        }, 10 * 60 * 1000);
         // Limpeza periódica de sessões antigas a cada 6 horas
-        setInterval(() => this.cleanupOldSessions(), 6 * 60 * 60 * 1000);
+        setInterval(() => {
+            try {
+                this.cleanupOldSessions();
+            } catch (e) {
+                // Ignora erros na limpeza
+            }
+        }, 6 * 60 * 60 * 1000);
     }
 
     setPort(port) {
@@ -217,22 +337,39 @@ class BaileysBot {
 
         this.sock.ev.on('messages.upsert', (payload) => {
             this.handleMessagesUpsert(payload).catch(err => {
-                // Trata especificamente erros Bad MAC
-                if (err?.message?.includes('Bad MAC') || err?.message?.includes('Failed to decrypt') || err?.message?.includes('Session error')) {
+                // Trata TODOS os erros sem deixar parar o bot
+                const errorMsg = err?.message || err?.toString() || '';
+                if (errorMsg.includes('Bad MAC') || 
+                    errorMsg.includes('Failed to decrypt') || 
+                    errorMsg.includes('Session error') ||
+                    errorMsg.includes('verifyMAC') ||
+                    errorMsg.includes('decryptWithSessions')) {
+                    // Trata erro Bad MAC mas continua funcionando
                     this.handleBadMacError('ao processar mensagem', err);
                 } else {
-                    console.error('❌ ERRO mensagens Baileys:', err);
+                    // Para outros erros, apenas loga mas não para o bot
+                    console.error('⚠️ Erro ao processar mensagens (continuando):', errorMsg.substring(0, 200));
                 }
+                // NUNCA re-lança o erro para não parar o bot
             });
         });
 
         // Listener para erros de descriptografia (Bad MAC)
+        // IMPORTANTE: NUNCA deixa erros pararem o bot
         this.sock.ev.on('error', (err) => {
-            if (err?.message?.includes('Bad MAC') || err?.message?.includes('Failed to decrypt') || err?.message?.includes('Session error')) {
+            const errorMsg = err?.message || err?.toString() || '';
+            if (errorMsg.includes('Bad MAC') || 
+                errorMsg.includes('Failed to decrypt') || 
+                errorMsg.includes('Session error') ||
+                errorMsg.includes('verifyMAC') ||
+                errorMsg.includes('decryptWithSessions')) {
+                // Trata erro Bad MAC mas continua funcionando
                 this.handleBadMacError('no socket', err);
             } else {
-                console.error('❌ Erro no socket Baileys:', err);
+                // Para outros erros, apenas loga mas não para o bot
+                console.error('⚠️ Erro no socket Baileys (continuando):', errorMsg.substring(0, 200));
             }
+            // NUNCA re-lança o erro - o bot deve continuar funcionando sempre
         });
 
         this.started = true;
@@ -704,7 +841,8 @@ class BaileysBot {
             try {
                 if (!msg.message) continue;
                 
-                // Tenta descriptografar a mensagem - se falhar com Bad MAC, ignora e loga
+                // Tenta descriptografar a mensagem - se falhar com Bad MAC, ignora completamente
+                // NUNCA deixa erro Bad MAC parar o processamento
                 try {
                     // Verifica se a mensagem pode ser descriptografada
                     if (msg.messageStubType === 'REVOKE' || msg.messageStubType === 'CIPHERTEXT') {
@@ -712,12 +850,21 @@ class BaileysBot {
                         // Continua normalmente, mas monitora erros
                     }
                 } catch (decryptErr) {
-                    if (decryptErr?.message?.includes('Bad MAC') || decryptErr?.message?.includes('Failed to decrypt') || decryptErr?.message?.includes('Session error')) {
+                    // Trata TODOS os erros de descriptografia sem interromper o bot
+                    const errorMsg = decryptErr?.message || decryptErr?.toString() || '';
+                    if (errorMsg.includes('Bad MAC') || 
+                        errorMsg.includes('Failed to decrypt') || 
+                        errorMsg.includes('Session error') ||
+                        errorMsg.includes('verifyMAC') ||
+                        errorMsg.includes('decryptWithSessions')) {
                         // Usa o handler centralizado para tratar erros Bad MAC
+                        // MAS continua processando outras mensagens normalmente
                         this.handleBadMacError('ao descriptografar mensagem', decryptErr);
-                        continue; // Ignora esta mensagem específica
+                        continue; // Ignora esta mensagem específica e continua com a próxima
                     }
-                    throw decryptErr; // Re-lança outros erros
+                    // Para outros erros de descriptografia, também ignora para não parar o bot
+                    console.error('⚠️ Erro ao descriptografar mensagem (ignorado):', errorMsg.substring(0, 100));
+                    continue; // Ignora e continua
                 }
 
                 const jid = msg.key.remoteJid;
@@ -2254,6 +2401,7 @@ Digite o *número* da opção ou *8* para voltar ao menu.`;
             this.badMacErrorThreshold = 5;
             this.lastBadMacErrorTime = 0;
             this.badMacErrorWindow = 3 * 60 * 1000;
+            this.lastBadMacLogTime = 0; // Timestamp do último log detalhado
         }
         
         const now = Date.now();
@@ -2266,44 +2414,68 @@ Digite o *número* da opção ou *8* para voltar ao menu.`;
         this.badMacErrorCount++;
         this.lastBadMacErrorTime = now;
         
-        console.error(`❌ ERRO Bad MAC detectado ${context}!`);
-        console.error(`📊 Contador de erros: ${this.badMacErrorCount}/${this.badMacErrorThreshold}`);
-        console.error('💡 Isso geralmente indica:');
-        console.error('   - Sessão corrompida ou tokens inválidos após alguns dias');
-        console.error('   - Múltiplas instâncias usando a mesma sessão');
-        console.error('   - Conflito entre diferentes versões do código');
-        console.error(`📁 Diretório de tokens: ${this.authDir}`);
+        // Reduz verbosidade: só mostra logs detalhados a cada 5 erros ou a cada 30 segundos
+        const shouldLogDetails = this.badMacErrorCount === 1 || 
+                                 this.badMacErrorCount % 5 === 0 || 
+                                 (now - (this.lastBadMacLogTime || 0)) > 30000;
+        
+        if (shouldLogDetails) {
+            this.lastBadMacLogTime = now;
+            console.error(`❌ ERRO Bad MAC detectado ${context} (${this.badMacErrorCount}/${this.badMacErrorThreshold})`);
+            
+            // Só mostra detalhes completos no primeiro erro ou quando próximo do limite
+            if (this.badMacErrorCount === 1 || this.badMacErrorCount >= this.badMacErrorThreshold - 1) {
+                console.error('💡 Isso geralmente indica:');
+                console.error('   - Sessão corrompida ou tokens inválidos após alguns dias');
+                console.error('   - Múltiplas instâncias usando a mesma sessão');
+                console.error('   - Conflito entre diferentes versões do código');
+                console.error(`📁 Diretório de tokens: ${this.authDir}`);
+            }
+        }
         
         // Se atingiu o limite de erros, limpa a sessão e reconecta
+        // IMPORTANTE: Isso é feito de forma assíncrona e não bloqueia o bot
         if (this.badMacErrorCount >= this.badMacErrorThreshold) {
             console.error('');
             console.error('⚠️⚠️⚠️ LIMITE DE ERROS BAD MAC ATINGIDO ⚠️⚠️⚠️');
             const timeWindow = Math.round((now - (this.lastBadMacErrorTime - this.badMacErrorWindow)) / 1000);
             console.error(`   ${this.badMacErrorCount} erros em ${timeWindow} segundos`);
             console.error('🔄 Limpando sessão corrompida e forçando reconexão...');
+            console.error('💡 O bot continuará funcionando durante a limpeza!');
             console.error('');
             
-            // Limpa a sessão e reconecta (não bloqueia)
-            this.cleanupAndReconnect().catch(e => {
-                console.error('❌ Erro ao limpar e reconectar:', e);
+            // Limpa a sessão e reconecta de forma assíncrona (não bloqueia)
+            // Usa setImmediate para não bloquear o event loop
+            setImmediate(() => {
+                this.cleanupAndReconnect().catch(e => {
+                    console.error('⚠️ Erro ao limpar e reconectar (bot continua funcionando):', e.message);
+                    // Reseta flag para permitir nova tentativa
+                    this.isRestarting = false;
+                });
             });
-        } else {
+        } else if (shouldLogDetails && this.badMacErrorCount < this.badMacErrorThreshold - 1) {
             console.error(`💡 Limpeza automática será acionada após ${this.badMacErrorThreshold - this.badMacErrorCount} erros adicionais`);
         }
     }
 
     /**
      * Limpa sessão corrompida e força reconexão
+     * IMPORTANTE: Não para o bot permanentemente, apenas reconecta
      */
     async cleanupAndReconnect() {
+        // Evita múltiplas limpezas simultâneas
+        if (this.isRestarting) {
+            console.log('⚠️ Limpeza já em andamento, aguardando...');
+            return;
+        }
+        
         try {
             console.log('🧹 Iniciando limpeza de sessão corrompida...');
             
-            // Para o bot atual
-            this.started = false;
+            // Marca como reiniciando para evitar múltiplas tentativas
             this.isRestarting = true;
             
-            // Fecha socket atual
+            // Fecha socket atual de forma segura
             if (this.sock) {
                 try {
                     if (this.sock.ev) {
@@ -2313,10 +2485,12 @@ Digite o *número* da opção ou *8* para voltar ao menu.`;
                         this.sock.ws.close();
                     }
                 } catch (e) {
-                    // Ignora erros ao fechar
+                    // Ignora erros ao fechar - não é crítico
                 }
                 this.sock = null;
             }
+            
+            // NÃO marca started como false aqui - queremos reconectar rapidamente
             
             // Limpa apenas arquivos de sessão específicos (não tudo)
             // Mantém credenciais principais mas limpa sessões corrompidas
@@ -2363,20 +2537,38 @@ Digite o *número* da opção ou *8* para voltar ao menu.`;
             this.lastBadMacErrorTime = 0;
             this.reconnectAttempts = 0;
             
-            console.log('🔄 Aguardando 5 segundos antes de reconectar...');
-            await new Promise(resolve => setTimeout(resolve, 5000));
+            console.log('🔄 Aguardando 3 segundos antes de reconectar...');
+            await new Promise(resolve => setTimeout(resolve, 3000));
             
-            // Reconecta
+            // Reconecta SEMPRE, mesmo se houver erro
             console.log('🔄 Reconectando após limpeza...');
             this.isRestarting = false;
-            await this.start();
+            
+            // Tenta reconectar - se falhar, tenta novamente SEMPRE
+            try {
+                await this.start();
+            } catch (startErr) {
+                console.error('⚠️ Erro ao reconectar após limpeza, tentando novamente em 10s:', startErr.message);
+                this.isRestarting = false;
+                // Tenta novamente após 10 segundos - NUNCA desiste
+                setTimeout(() => {
+                    this.start().catch(err => {
+                        console.error('⚠️ Falha ao reconectar após limpeza (continuando tentativas):', err.message);
+                        // Continua tentando - não desiste nunca
+                        this.isRestarting = false;
+                    });
+                }, 10000);
+            }
             
         } catch (e) {
-            console.error('❌ Erro ao limpar e reconectar:', e);
+            console.error('⚠️ Erro ao limpar e reconectar (continuando tentativas):', e.message);
             this.isRestarting = false;
-            // Tenta reconectar mesmo com erro
+            // SEMPRE tenta reconectar mesmo com erro - nunca desiste
             setTimeout(() => {
-                this.start().catch(err => console.error('❌ Falha ao reconectar após limpeza:', err));
+                this.start().catch(err => {
+                    console.error('⚠️ Falha ao reconectar após limpeza (continuando):', err.message);
+                    this.isRestarting = false;
+                });
             }, 10000);
         }
     }

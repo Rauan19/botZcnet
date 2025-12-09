@@ -52,3 +52,5 @@ pm2 start index.js --name "bot2" --interpreter node --env WHATSAPP_PROVIDER=bail
 
 
 
+
+
