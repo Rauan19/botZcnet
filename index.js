@@ -1,5 +1,25 @@
-const WhatsAppBot = require('./whatsappBot');
-const BaileysBot = require('./baileysBot');
+// LAZY LOADING: Carrega apenas o módulo necessário para economizar memória
+// Se usar Baileys, não carrega whatsapp-web.js (Puppeteer/Chrome) que é pesado
+let WhatsAppBot = null;
+let BaileysBot = null;
+
+// Função para carregar módulo sob demanda
+function loadBotModule(provider) {
+    if (provider === 'baileys') {
+        if (!BaileysBot) {
+            console.log('📦 Carregando módulo BaileysBot...');
+            BaileysBot = require('./baileysBot');
+        }
+        return BaileysBot;
+    } else {
+        if (!WhatsAppBot) {
+            console.log('📦 Carregando módulo WhatsAppBot (whatsapp-web.js)...');
+            WhatsAppBot = require('./whatsappBot');
+        }
+        return WhatsAppBot;
+    }
+}
+
 const zcBillService = require('./services/zcBillService');
 const zcClientService = require('./services/zcClientService');
 const express = require('express');
@@ -119,12 +139,21 @@ class App {
         this.provider = (process.env.WHATSAPP_PROVIDER || 'wweb').toLowerCase();
         this.usingBaileys = this.provider === 'baileys';
         this.port = process.env.PORT || 3009;
-        this.bot = this.usingBaileys ? new BaileysBot() : new WhatsAppBot();
+        
+        // LAZY LOADING: Carrega apenas o módulo necessário
+        const BotClass = loadBotModule(this.provider);
+        this.bot = new BotClass();
+        
         // Passa a porta para o bot se for Baileys
         if (this.usingBaileys && this.bot.setPort) {
             this.bot.setPort(this.port);
         }
+        
         console.log(`🤖 Driver WhatsApp selecionado: ${this.usingBaileys ? 'Baileys (@whiskeysockets/baileys)' : 'whatsapp-web.js'}`);
+        if (this.usingBaileys) {
+            console.log('✅ Apenas Baileys carregado - whatsapp-web.js não foi carregado (economia de memória)');
+        }
+        
         this.setupDirectories(); // Cria diretórios necessários
         this.setupGracefulShutdown();
         this.setupCleanup();
