@@ -340,9 +340,28 @@ class BaileysBot {
         this.saveCreds = saveCreds;
         this.authState = state; // Salva state para verificar depois
         
-        console.log('📦 Buscando versão mais recente do Baileys...');
-        const { version } = await fetchLatestBaileysVersion();
-        console.log(`✅ Versão Baileys: ${version.join('.')}`);
+        // CONTROLE DE VERSÃO: Desabilitado por padrão em produção
+        // Atualizações automáticas podem quebrar o bot em produção
+        // Para habilitar, defina BAILEYS_AUTO_UPDATE=true no .env
+        let version;
+        if (process.env.BAILEYS_AUTO_UPDATE === 'true') {
+            console.log('📦 Buscando versão mais recente do Baileys...');
+            try {
+                const versionInfo = await fetchLatestBaileysVersion();
+                version = versionInfo.version;
+                console.log(`✅ Versão Baileys: ${version.join('.')} ${versionInfo.isLatest ? '(mais recente)' : '(atualização disponível)'}`);
+            } catch (error) {
+                console.log('⚠️ Não foi possível verificar versão do Baileys (usando versão padrão)');
+                // Usa versão padrão se falhar
+                version = undefined; // Baileys vai usar versão padrão
+            }
+        } else {
+            // Usa versão fixa do package.json (mais seguro para produção)
+            const baileysPackage = require('@whiskeysockets/baileys/package.json');
+            console.log(`✅ Versão Baileys fixa: ${baileysPackage.version} (atualizações automáticas desabilitadas)`);
+            // Não define version - Baileys vai usar versão padrão do código instalado
+            version = undefined; // Baileys detecta automaticamente a versão do código
+        }
 
         // Verifica se há credenciais salvas
         const hasCredentials = state.creds && state.creds.me;
@@ -377,8 +396,8 @@ class BaileysBot {
 
         // Configuração otimizada para evitar erro 405
         // Aumenta delays e timeouts para evitar rate limiting
-        this.sock = makeWASocket({
-            version,
+        const socketConfig = {
+            ...(version && { version }), // Só inclui version se estiver definido
             auth: state,
             logger: this.logger,
             browser: Browsers.macOS('Chrome'),
@@ -387,12 +406,13 @@ class BaileysBot {
             emitOwnEvents: false,
             generateHighQualityLinkPreview: false,
             // printQRInTerminal foi removido (deprecated) - estamos imprimindo manualmente
-            // MELHORADO: Timeouts aumentados para conexões de longa duração
-            // Evita desconexões após minutos/dias de uso
-            connectTimeoutMs: 300000, // 5 minutos (aumentado para conexões lentas)
-            defaultQueryTimeoutMs: 300000, // 5 minutos (aumentado)
-            keepAliveIntervalMs: 25000, // Keepalive a cada 25 segundos (mais frequente para manter conexão)
-            qrTimeout: 300000, // 5 minutos
+            // MELHORADO: Timeouts aumentados para VPS e conexões de longa duração
+            // VPS geralmente tem latência maior e rede menos estável
+            // Timeouts maiores evitam desconexões em servidores remotos
+            connectTimeoutMs: 600000, // 10 minutos (dobrado para VPS com rede ruim)
+            defaultQueryTimeoutMs: 600000, // 10 minutos (dobrado para VPS)
+            keepAliveIntervalMs: 30000, // Keepalive a cada 30 segundos (mais frequente para VPS)
+            qrTimeout: 600000, // 10 minutos (dobrado para VPS)
             // Configurações adicionais para manter conexão estável
             shouldReconnectSocket: () => true, // Sempre tenta reconectar se socket cair
             // Configurações para manter conexão
@@ -407,7 +427,9 @@ class BaileysBot {
             },
             // Configurações adicionais para evitar erro 405
             fireInitQueries: false // Não dispara queries automáticas na inicialização
-        });
+        };
+        
+        this.sock = makeWASocket(socketConfig);
 
         this.client = this.sock;
         

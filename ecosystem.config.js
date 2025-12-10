@@ -5,7 +5,10 @@ module.exports = {
       script: 'index.js',
       interpreter: 'node',
       // Aumenta heap para evitar estouro de memória (4GB)
+      // VPS precisa de mais memória devido a latência e processamento mais lento
       node_args: '--max-old-space-size=4096',
+      // Limite de memória antes de reiniciar (evita crash)
+      max_memory_restart: '2G',
       // Variáveis de ambiente
       env: {
         WHATSAPP_PROVIDER: 'baileys',
@@ -41,6 +44,7 @@ module.exports = {
       script: 'index.js',
       interpreter: 'node',
       node_args: '--max-old-space-size=4096',
+      max_memory_restart: '2G',
       env: {
         WHATSAPP_PROVIDER: 'baileys',
         PORT: '3010',
@@ -67,6 +71,7 @@ module.exports = {
       script: 'index.js',
       interpreter: 'node',
       node_args: '--max-old-space-size=4096',
+      max_memory_restart: '2G',
       env: {
         WHATSAPP_PROVIDER: 'baileys',
         PORT: '3011',
