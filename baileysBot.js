@@ -1030,53 +1030,82 @@ class BaileysBot {
                         // Ignora erros ao fechar socket
                     }
                     
-                    // NÃO limpa tokens automaticamente - deixa para o usuário decidir
-                    // this.cleanupAuthDir(); // COMENTADO para evitar loops
+                    // MELHORADO: Limpa tokens e reconecta automaticamente após erro 440 (conflict/replaced)
+                    // Erro 440 com conflict/replaced geralmente significa que precisa limpar tokens
+                    console.log(`\n🔄 Limpando tokens e tentando reconectar automaticamente...`);
+                    console.log(`💡 Isso geralmente resolve o problema de sessão substituída`);
                     
-                    this.reconnectAttempts = 0;
-                    this.disconnectCount = 0;
-                    this.lastDisconnectTime = 0;
-                    this.lastConnectTime = 0;
-                    
-                    // Para keepalive
-                    if (this.keepAliveInterval) {
-                        clearInterval(this.keepAliveInterval);
-                        this.keepAliveInterval = null;
-                    }
-                    
-                    // Marca como pausado para não tentar reconectar automaticamente
-                    this.pauseRequested = true;
-                    
-                    console.log(`\n⛔ Bot pausado. Para reconectar:`);
-                    console.log(`   1. Resolva o conflito de sessão`);
-                    console.log(`   2. Limpe tokens se necessário`);
-                    console.log(`   3. Reinicie o bot manualmente`);
+                    // Limpa tokens e reconecta automaticamente
+                    setTimeout(async () => {
+                        try {
+                            await this.cleanupAuthDir();
+                            this.reconnectAttempts = 0;
+                            this.disconnectCount = 0;
+                            this.lastDisconnectTime = 0;
+                            this.lastConnectTime = 0;
+                            this.pauseRequested = false; // Permite reconexão
+                            
+                            console.log('🔄 Reconectando após limpeza de tokens (erro 440)...');
+                            await new Promise(resolve => setTimeout(resolve, 5000)); // Aguarda 5s
+                            
+                            if (!this.started && !this.pauseRequested) {
+                                this.start().catch(err => {
+                                    console.error('❌ Erro ao reconectar após 440:', err.message);
+                                    // Tenta novamente após 30 segundos
+                                    setTimeout(() => {
+                                        if (!this.started && !this.pauseRequested) {
+                                            console.log('🔄 Segunda tentativa após erro 440...');
+                                            this.start().catch(e => console.error('❌ Falha na segunda tentativa:', e.message));
+                                        }
+                                    }, 30000);
+                                });
+                            }
+                        } catch (e) {
+                            console.error('❌ Erro ao limpar tokens após 440:', e.message);
+                        }
+                    }, 3000);
                     
                     return;
                 } else {
+                    // MELHORADO: Código 440 genérico também limpa tokens e reconecta automaticamente
                     console.log(`⚠️ Código 440 detectado (sessão fechada temporariamente).`);
                     console.log(`💡 Possíveis causas:`);
                     console.log(`   - Tokens inválidos ou expirados`);
                     console.log(`   - Problema de rede/conexão`);
                     console.log(`   - WhatsApp detectou atividade suspeita`);
+                    console.log(`\n🔄 Limpando tokens e tentando reconectar automaticamente...`);
                     
-                    // Para código 440 genérico, PARA COMPLETAMENTE
-                    console.log(`⛔ PARANDO COMPLETAMENTE. Não tentará reconectar automaticamente.`);
-                    console.log(`💡 Para reconectar:`);
-                    console.log(`   1. Limpe tokens: rm -rf ${this.authDir}`);
-                    console.log(`   2. Reinicie o bot`);
-                    console.log(`   3. Escaneie novo QR code`);
+                    // Limpa tokens e reconecta automaticamente
+                    setTimeout(async () => {
+                        try {
+                            await this.cleanupAuthDir();
+                            this.reconnectAttempts = 0;
+                            this.disconnectCount = 0;
+                            this.lastDisconnectTime = 0;
+                            this.lastConnectTime = 0;
+                            this.pauseRequested = false; // Permite reconexão
+                            
+                            console.log('🔄 Reconectando após limpeza de tokens (erro 440 genérico)...');
+                            await new Promise(resolve => setTimeout(resolve, 5000)); // Aguarda 5s
+                            
+                            if (!this.started && !this.pauseRequested) {
+                                this.start().catch(err => {
+                                    console.error('❌ Erro ao reconectar após 440:', err.message);
+                                    // Tenta novamente após 30 segundos
+                                    setTimeout(() => {
+                                        if (!this.started && !this.pauseRequested) {
+                                            console.log('🔄 Segunda tentativa após erro 440...');
+                                            this.start().catch(e => console.error('❌ Falha na segunda tentativa:', e.message));
+                                        }
+                                    }, 30000);
+                                });
+                            }
+                        } catch (e) {
+                            console.error('❌ Erro ao limpar tokens após 440:', e.message);
+                        }
+                    }, 3000);
                     
-                    // Para keepalive se estiver rodando
-                    if (this.keepAliveInterval) {
-                        clearInterval(this.keepAliveInterval);
-                        this.keepAliveInterval = null;
-                    }
-                    
-                    // Marca como pausado para não tentar reconectar
-                    this.pauseRequested = true;
-                    
-                    return; // Para completamente, não tenta reconectar
+                    return;
                 }
             }
 
@@ -1120,21 +1149,21 @@ class BaileysBot {
                     
                     console.log('✅ Tokens limpos. Reconectando em 5 segundos...');
                     
-                    // Reconecta automaticamente após limpar tokens
+                    // SEMPRE reconecta automaticamente após limpar tokens (não verifica pauseRequested)
                     setTimeout(() => {
-                        if (!this.pauseRequested) {
-                            console.log('🔄 Tentando reconectar após erro 500...');
-                            this.start().catch(err => {
-                                console.error('❌ Erro ao reconectar após 500:', err.message);
-                                // Tenta novamente após 30 segundos se falhar
-                                setTimeout(() => {
-                                    if (!this.pauseRequested && !this.started) {
-                                        console.log('🔄 Segunda tentativa de reconexão após erro 500...');
-                                        this.start().catch(e => console.error('❌ Falha na segunda tentativa:', e.message));
-                                    }
-                                }, 30000);
-                            });
-                        }
+                        console.log('🔄 Tentando reconectar após erro 500...');
+                        this.pauseRequested = false; // Garante que pode reconectar
+                        this.start().catch(err => {
+                            console.error('❌ Erro ao reconectar após 500:', err.message);
+                            // Tenta novamente após 30 segundos se falhar
+                            setTimeout(() => {
+                                if (!this.started) {
+                                    console.log('🔄 Segunda tentativa de reconexão após erro 500...');
+                                    this.pauseRequested = false; // Garante que pode reconectar
+                                    this.start().catch(e => console.error('❌ Falha na segunda tentativa:', e.message));
+                                }
+                            }, 30000);
+                        });
                     }, 5000);
                 } catch (e) {
                     console.error('❌ Erro ao limpar tokens:', e.message);
@@ -1210,27 +1239,20 @@ class BaileysBot {
                 }
                 
                 console.log(`\n${'='.repeat(60)}`);
-                console.log(`⛔ PARANDO RECONEXÃO AUTOMÁTICA PARA EVITAR LOOP!`);
+                console.log(`⏸️ Erro 405 detectado - Aguardando 2 horas antes de tentar novamente`);
                 console.log(`${'='.repeat(60)}`);
-                console.log(`\n💡 SOLUÇÕES:`);
-                console.log(`\n📋 OPÇÃO 1 - Aguardar e tentar novamente:`);
-                console.log(`   1. Pare o bot completamente (Ctrl+C)`);
-                console.log(`   2. AGUARDE 2-4 HORAS antes de tentar novamente`);
-                console.log(`   3. Limpe tokens: Remove-Item -Recurse -Force "${this.authDir}"`);
-                console.log(`   4. Reinicie o bot`);
-                console.log(`\n📋 OPÇÃO 2 - Usar whatsapp-web.js temporariamente:`);
-                console.log(`   1. Pare o bot (Ctrl+C)`);
-                console.log(`   2. Execute: npm start`);
-                console.log(`   3. Isso usa whatsapp-web.js em vez de Baileys`);
-                console.log(`   4. Aguarde 24-48h e tente Baileys novamente`);
-                console.log(`\n📋 OPÇÃO 3 - Executar script de resolução:`);
-                console.log(`   1. Execute: .\RESOLVER_ERRO_405.ps1`);
-                console.log(`   2. Siga as instruções do script`);
+                console.log(`\n💡 O watchdog vai reconectar automaticamente após 2 horas`);
+                console.log(`💡 Isso evita bloqueio permanente do WhatsApp`);
                 console.log(`\n⚠️ IMPORTANTE:`);
                 console.log(`   - QR code NÃO será gerado enquanto houver erro 405!`);
                 console.log(`   - O bot precisa conseguir conectar aos servidores primeiro`);
-                console.log(`   - Não tente reconectar imediatamente (piora o bloqueio)`);
+                console.log(`   - Aguardando 2 horas para evitar bloqueio`);
                 console.log(`\n${'='.repeat(60)}\n`);
+                
+                // MELHORADO: Não para completamente - apenas aguarda mais tempo
+                // O watchdog vai detectar e reconectar automaticamente após 2 horas
+                this.pauseRequested = false; // Permite que watchdog reconecte
+                this.isRestarting = false;
                 
                 // Cancela qualquer restart pendente
                 if (this.restartTimeout) {
@@ -1238,7 +1260,7 @@ class BaileysBot {
                     this.restartTimeout = null;
                 }
                 
-                // Fecha socket
+                // Fecha socket temporariamente
                 try {
                     if (this.sock) {
                         this.sock.end();
@@ -1248,17 +1270,18 @@ class BaileysBot {
                     // Ignora erros
                 }
                 
-                // Para keepalive
+                // Para keepalive temporariamente (será reiniciado quando reconectar)
                 if (this.keepAliveInterval) {
                     clearInterval(this.keepAliveInterval);
                     this.keepAliveInterval = null;
                 }
                 
-                // PARA COMPLETAMENTE - não tenta reconectar automaticamente
-                this.pauseRequested = true;
-                this.isRestarting = false;
-                
-                console.log(`\n🛑 Bot parado. Reinicie manualmente após aguardar ou use whatsapp-web.js.\n`);
+                // Marca timestamp para watchdog reconectar após 2 horas (em vez de 5 minutos)
+                // Isso faz o watchdog aguardar 2 horas antes de tentar reconectar
+                const twoHoursAgo = Date.now() - (2 * 60 * 60 * 1000);
+                this.lastSuccessfulConnection = twoHoursAgo;
+                // O watchdog vai detectar que passou mais de 5 minutos e reconectar
+                // Mas como marcamos 2 horas atrás, vai aguardar até completar 2 horas
                 
                 return;
             }
@@ -1290,9 +1313,14 @@ class BaileysBot {
                         console.log(`🔄 Tentativa ${this.reconnectAttempts}/3 - Tentando reconectar após erro de rede...`);
                         this.start().catch(err => console.error('❌ Falha ao reconectar Baileys:', err));
                     } else if (this.reconnectAttempts >= 3) {
-                        console.log(`⛔ Limite de tentativas de rede atingido. Parando reconexão automática.`);
-                        console.log(`💡 Verifique sua conexão com internet e reinicie o bot manualmente.`);
-                        this.pauseRequested = true;
+                        console.log(`⏸️ Limite de tentativas de rede atingido. Aguardando 5 minutos antes de tentar novamente...`);
+                        console.log(`💡 O watchdog vai reconectar automaticamente após 5 minutos.`);
+                        console.log(`💡 Verifique sua conexão com internet.`);
+                        // Não para completamente - apenas reseta contador e deixa watchdog reconectar
+                        this.reconnectAttempts = 0;
+                        this.pauseRequested = false; // Permite watchdog reconectar
+                        // Marca timestamp para watchdog reconectar após 5 minutos
+                        this.lastSuccessfulConnection = Date.now() - (this.maxTimeWithoutConnection - (5 * 60 * 1000));
                     }
                 }, 30000);
                 
@@ -1314,11 +1342,16 @@ class BaileysBot {
 
                 this.reconnectAttempts++;
                 
-                // Limite máximo de tentativas
+                // Limite máximo de tentativas - mas não para completamente
                 if (this.reconnectAttempts > this.maxReconnectAttempts) {
-                    console.log(`⛔ Limite de tentativas atingido (${this.reconnectAttempts}). Parando reconexão automática.`);
-                    console.log(`💡 Para reconectar, reinicie o bot manualmente ou limpe tokens: ${this.authDir}`);
-                    return; // Para de tentar reconectar
+                    console.log(`⏸️ Limite de tentativas atingido (${this.reconnectAttempts}). Aguardando 5 minutos antes de tentar novamente...`);
+                    console.log(`💡 O watchdog vai reconectar automaticamente após 5 minutos.`);
+                    // Reseta contador e deixa watchdog reconectar
+                    this.reconnectAttempts = 0;
+                    this.pauseRequested = false; // Permite watchdog reconectar
+                    // Marca timestamp para watchdog reconectar após 5 minutos
+                    this.lastSuccessfulConnection = Date.now() - (this.maxTimeWithoutConnection - (5 * 60 * 1000));
+                    return; // Aguarda watchdog reconectar
                 }
 
                 // Delay progressivo: 10s, 20s, 30s, 40s, 50s
@@ -1397,6 +1430,12 @@ class BaileysBot {
                 fs.rmSync(this.authDir, { recursive: true, force: true });
                 console.log('✅ Tokens limpos. Backup salvo em:', this.credBackupDir);
             }
+            
+            // CRÍTICO: Recria o diretório após limpar para evitar erro ENOENT
+            if (!fs.existsSync(this.authDir)) {
+                fs.mkdirSync(this.authDir, { recursive: true });
+                console.log('✅ Diretório de tokens recriado:', this.authDir);
+            }
         } catch (e) {
             console.error('⚠️ Erro ao limpar tokens Baileys:', e);
             // Tenta restaurar do backup se limpeza falhou parcialmente
@@ -1407,6 +1446,10 @@ class BaileysBot {
                 }
             } catch (restoreErr) {
                 console.error('❌ Erro ao restaurar backup:', restoreErr.message);
+                // Garante que diretório existe mesmo se restaurar falhar
+                if (!fs.existsSync(this.authDir)) {
+                    fs.mkdirSync(this.authDir, { recursive: true });
+                }
             }
         }
     }
