@@ -25,6 +25,22 @@ class BaileysBot {
         this.qrString = null;
         this.qrGeneratedTime = 0; // Timestamp de quando QR foi gerado (para detectar QR recente)
         this.authState = null; // Estado de autenticação para verificar credenciais
+        this.silentMode = true; // Modo silencioso - apenas logs críticos
+        
+        // Helper para logs críticos apenas
+        this.log = {
+            critical: (...args) => console.log(...args), // Apenas críticos
+            error: (...args) => console.error(...args), // Apenas erros críticos
+            qr: (...args) => console.log(...args), // QR code sempre mostra
+            connect: (...args) => console.log(...args), // Conexão sempre mostra
+            // Todos os outros logs são ignorados
+            debug: () => {},
+            info: () => {},
+            warn: () => {},
+            detail: () => {},
+            verbose: () => {}
+        };
+        
         // Logger COMPLETAMENTE silencioso - desativa TODOS os logs do Baileys
         // Isso é crítico para evitar logs enormes de criptografia que enchem o heap
         // Níveis: trace, debug, info, warn, error, fatal, silent
@@ -169,10 +185,7 @@ class BaileysBot {
                          'baileys1';
         this.authDir = path.join(__dirname, `tokens-${sessionId}`);
         this.port = process.env.PORT ? parseInt(process.env.PORT) : 3009; // Porta do servidor para logs
-        console.log(`📁 Diretório de autenticação: ${this.authDir}`);
-        console.log(`🌐 Porta configurada: ${this.port}`);
-        console.log(`🔑 Session ID usado: ${sessionId}`);
-        console.log(`⚠️ IMPORTANTE: Certifique-se de que cada bot usa um diretório diferente!`);
+        // Logs de inicialização removidos - não críticos
         this.reconnectRequested = false;
         this.reconnectAttempts = 0;
         this.maxReconnectAttempts = 5; // Limite de tentativas antes de limpar sessão
@@ -294,17 +307,17 @@ class BaileysBot {
 
     setPort(port) {
         this.port = port;
-        console.log(`🌐 Porta atualizada para: ${this.port}`);
+        // Log removido - não crítico
     }
 
     async start() {
         if (this.started) {
-            console.log('⚠️ Baileys já iniciado.');
+            // Já iniciado - não precisa logar
             return;
         }
         
         if (this.isRestarting) {
-            console.log('⚠️ Baileys já está reiniciando. Aguarde...');
+            // Já reiniciando - não precisa logar
             return;
         }
 
@@ -318,7 +331,7 @@ class BaileysBot {
         const totalWaitTime = baseWaitTime + reconnectWaitTime;
         
         if (totalWaitTime > 0) {
-            console.log(`⏳ Aguardando ${totalWaitTime/1000}s antes de iniciar conexão (evita erro 405)...`);
+            // Aguardando para evitar erro 405
             await new Promise(resolve => setTimeout(resolve, totalWaitTime));
         }
 
@@ -333,11 +346,11 @@ class BaileysBot {
 
         // Verifica se há credenciais salvas
         const hasCredentials = state.creds && state.creds.me;
-        console.log(`🔐 Estado de autenticação: ${hasCredentials ? 'Credenciais encontradas' : 'Sem credenciais (precisa escanear QR)'}`);
+        // Estado de autenticação verificado
         
         // MELHORADO: Se não há credenciais, tenta restaurar do backup
         if (!hasCredentials) {
-            console.log('🔄 Tentando restaurar credenciais do backup...');
+            // Tentando restaurar credenciais do backup
             const restored = this.restoreCredentialsFromBackup();
             if (restored) {
                 // Recarrega estado após restaurar
@@ -346,17 +359,13 @@ class BaileysBot {
                 this.authState = restoredState;
                 const hasRestoredCreds = restoredState.creds && restoredState.creds.me;
                 if (hasRestoredCreds) {
-                    console.log('✅ Credenciais restauradas do backup com sucesso!');
-                    console.log(`📱 Conectado como: ${restoredState.creds.me?.id || 'N/A'}`);
+                    // Credenciais restauradas do backup
                 }
             }
         } else {
-            console.log(`📱 Conectado como: ${state.creds.me?.id || 'N/A'}`);
             // Verifica se credenciais estão válidas
             if (!state.creds.registered || !state.creds.account) {
-                console.log('⚠️ Credenciais podem estar inválidas ou incompletas');
                 // Tenta restaurar do backup se credenciais parecem inválidas
-                console.log('🔄 Tentando restaurar credenciais válidas do backup...');
                 const restored = this.restoreCredentialsFromBackup();
                 if (restored) {
                     const { state: restoredState, saveCreds: restoredSaveCreds } = await useMultiFileAuthState(this.authDir);
@@ -402,8 +411,6 @@ class BaileysBot {
 
         this.client = this.sock;
         
-        console.log('🔌 Socket Baileys criado. Configurando listeners...');
-        
         // Marca como não reiniciando quando conecta com sucesso
         this.isRestarting = false;
         if (this.restartTimeout) {
@@ -413,20 +420,13 @@ class BaileysBot {
 
         // Listener único para connection.update (evita duplicação)
         this.sock.ev.on('connection.update', (update) => {
-            if (update.connection === 'connecting') {
-                console.log('🔄 Tentando conectar...');
-            } else if (update.connection === 'open') {
-                console.log('✅ Conexão estabelecida com sucesso!');
-            } else if (update.connection === 'close') {
-                console.log('❌ Conexão fechada');
-            }
-            
             // Processa atualização através do handler principal
-            this.handleConnectionUpdate(update).catch(err => console.error('❌ ERRO conexão Baileys:', err));
+            this.handleConnectionUpdate(update).catch(err => {
+                if (!err.message?.includes('Bad MAC')) {
+                    this.log.error('ERRO conexão:', err.message);
+                }
+            });
         });
-        
-        // Log adicional para verificar se eventos estão sendo registrados
-        console.log('📡 Event listeners registrados. Aguardando eventos de conexão...');
 
         // Salva credenciais sempre que atualizar (silenciosamente)
         // MELHORADO: Salva imediatamente e cria backup
@@ -443,7 +443,7 @@ class BaileysBot {
                     this.lastCredBackup = now;
                 }
             } catch (e) {
-                console.error('⚠️ Erro ao salvar credenciais (continuando):', e.message);
+                // Erro ao salvar credenciais - não crítico, continua
             }
         });
         
@@ -464,10 +464,8 @@ class BaileysBot {
                     errorMsg.includes('decryptWithSessions')) {
                     // Trata erro Bad MAC mas continua funcionando
                     this.handleBadMacError('ao processar mensagem', err);
-                } else {
-                    // Para outros erros, apenas loga mas não para o bot
-                    console.error('⚠️ Erro ao processar mensagens (continuando):', errorMsg.substring(0, 200));
                 }
+                // Erros não críticos são ignorados - bot continua funcionando
                 // NUNCA re-lança o erro para não parar o bot
             });
         });
@@ -483,10 +481,8 @@ class BaileysBot {
                 errorMsg.includes('decryptWithSessions')) {
                 // Trata erro Bad MAC mas continua funcionando
                 this.handleBadMacError('no socket', err);
-            } else {
-                // Para outros erros, apenas loga mas não para o bot
-                console.error('⚠️ Erro no socket Baileys (continuando):', errorMsg.substring(0, 200));
             }
+            // Erros não críticos são ignorados - bot continua funcionando
             // NUNCA re-lança o erro - o bot deve continuar funcionando sempre
         });
 
@@ -496,22 +492,6 @@ class BaileysBot {
         
         // INICIA WATCHDOG DE AUTO-RECUPERAÇÃO
         this.startWatchdog();
-        
-        console.log('✅ Bot Baileys inicializado.');
-        console.log('⏳ Aguardando eventos de conexão do WhatsApp...');
-        console.log('💡 O QR code aparecerá aqui quando o WhatsApp solicitar.');
-        console.log('🔄 Sistema de auto-recuperação ativado - bot nunca parará completamente');
-        console.log('');
-        
-        // Timeout para verificar se eventos estão sendo recebidos
-        setTimeout(() => {
-            if (!this.qrString && !this.sock?.user) {
-                console.log('⚠️ [DEBUG] Após 5 segundos: Nenhum evento de conexão recebido ainda.');
-                console.log('⚠️ [DEBUG] Socket existe?', !!this.sock);
-                console.log('⚠️ [DEBUG] Socket tem eventos?', !!this.sock?.ev);
-                console.log('💡 Isso é normal se não houver credenciais salvas. Aguarde mais alguns segundos...');
-            }
-        }, 5000);
     }
     
     /**
@@ -808,19 +788,11 @@ class BaileysBot {
                 this.restartTimeout = null;
             }
             
-            // Verifica se socket está realmente conectado
+            // Conexão estabelecida - sempre mostra (crítico)
             if (this.sock?.user) {
                 const userId = this.sock.user.id;
                 const phoneNumber = userId.split(':')[0];
-                console.log(`✅ Sessão ativa: ${userId}`);
-                console.log(`📱 Número conectado: ${phoneNumber}`);
-                console.log(`🌐 Servidor rodando em: http://localhost:${this.port}`);
-                console.log(`📊 Painel disponível em: http://localhost:${this.port}`);
-                console.log(`📁 Diretório de tokens: ${this.authDir}`);
-                console.log('═══════════════════════════════════════════════════════');
-                console.log('');
-            } else {
-                console.log('⚠️ Socket conectado mas sem informações do usuário');
+                this.log.connect(`✅ CONECTADO: ${phoneNumber} (${userId})`);
             }
             
             // Inicia keepalive manual para garantir conexão
@@ -921,24 +893,13 @@ class BaileysBot {
                 
                 if (justGeneratedQr) {
                     console.log(`⚠️ Código 428 detectado logo após gerar QR code`);
-                    console.log(`💡 Isso pode ser temporário. Tentando reconectar em 10 segundos...`);
+                    console.log(`💡 Aguardando QR code ser escaneado. Não reconectando automaticamente...`);
+                    console.log(`💡 Escaneie o QR code que foi gerado. O bot reconectará automaticamente após escanear.`);
                     
-                    // Tenta reconectar após 10 segundos
-                    setTimeout(() => {
-                        if (!this.started && !this.pauseRequested) {
-                            console.log('🔄 Tentando reconectar após erro 428 temporário...');
-                            this.start().catch(err => {
-                                console.error('❌ Erro ao reconectar:', err.message);
-                                // Se falhar novamente, tenta mais uma vez após 30 segundos
-                                setTimeout(() => {
-                                    if (!this.started && !this.pauseRequested) {
-                                        console.log('🔄 Segunda tentativa de reconexão após erro 428...');
-                                        this.start().catch(e => console.error('❌ Falha na segunda tentativa:', e.message));
-                                    }
-                                }, 30000);
-                            });
-                        }
-                    }, 10000);
+                    // NÃO reconecta imediatamente após gerar QR - aguarda ser escaneado
+                    // O WhatsApp vai reconectar automaticamente quando o QR for escaneado
+                    // Se reconectar muito rápido, vai gerar novo QR e entrar em loop
+                    this.pauseRequested = false; // Permite reconexão quando QR for escaneado
                     
                     return;
                 }
@@ -1001,12 +962,8 @@ class BaileysBot {
                     console.log(`   - Ou outra instância do bot está usando a mesma sessão`);
                     console.log(`   - A sessão atual foi substituída por outra conexão`);
                     console.log(`\n📁 Diretório de autenticação atual: ${this.authDir}`);
-                    console.log(`\n⚠️ ATENÇÃO: Não limpará tokens automaticamente para evitar loops!`);
-                    console.log(`💡 SOLUÇÃO MANUAL:`);
-                    console.log(`   1. Verifique se há outro bot rodando na VPS ou localmente`);
-                    console.log(`   2. Certifique-se de que cada bot usa um diretório diferente`);
-                    console.log(`   3. Se necessário, limpe tokens manualmente: Remove-Item -Recurse -Force "${this.authDir}"`);
-                    console.log(`   4. Reinicie o bot após limpar tokens`);
+                    console.log(`\n🔄 Limpando tokens e tentando reconectar automaticamente...`);
+                    console.log(`💡 Isso geralmente resolve o problema de sessão substituída`);
                     
                     // Cancela restart anterior se existir
                     if (this.restartTimeout) {
@@ -1032,11 +989,8 @@ class BaileysBot {
                     
                     // MELHORADO: Limpa tokens e reconecta automaticamente após erro 440 (conflict/replaced)
                     // Erro 440 com conflict/replaced geralmente significa que precisa limpar tokens
-                    console.log(`\n🔄 Limpando tokens e tentando reconectar automaticamente...`);
-                    console.log(`💡 Isso geralmente resolve o problema de sessão substituída`);
-                    
-                    // Limpa tokens e reconecta automaticamente
-                    setTimeout(async () => {
+                    // Limpa tokens IMEDIATAMENTE e reconecta
+                    (async () => {
                         try {
                             await this.cleanupAuthDir();
                             this.reconnectAttempts = 0;
@@ -1045,10 +999,11 @@ class BaileysBot {
                             this.lastConnectTime = 0;
                             this.pauseRequested = false; // Permite reconexão
                             
-                            console.log('🔄 Reconectando após limpeza de tokens (erro 440)...');
+                            console.log('✅ Tokens limpos. Aguardando 5 segundos antes de reconectar...');
                             await new Promise(resolve => setTimeout(resolve, 5000)); // Aguarda 5s
                             
                             if (!this.started && !this.pauseRequested) {
+                                console.log('🔄 Reconectando após limpeza de tokens (erro 440)...');
                                 this.start().catch(err => {
                                     console.error('❌ Erro ao reconectar após 440:', err.message);
                                     // Tenta novamente após 30 segundos
@@ -1062,8 +1017,15 @@ class BaileysBot {
                             }
                         } catch (e) {
                             console.error('❌ Erro ao limpar tokens após 440:', e.message);
+                            // Mesmo com erro, tenta reconectar após um tempo
+                            setTimeout(() => {
+                                if (!this.started && !this.pauseRequested) {
+                                    this.pauseRequested = false;
+                                    this.start().catch(err => console.error('❌ Erro ao reconectar após falha na limpeza:', err.message));
+                                }
+                            }, 10000);
                         }
-                    }, 3000);
+                    })();
                     
                     return;
                 } else {
@@ -1426,30 +1388,42 @@ class BaileysBot {
             // Aguarda um pouco para garantir que backup foi criado
             await new Promise(resolve => setTimeout(resolve, 1000));
             
+            // Remove diretório se existir
             if (fs.existsSync(this.authDir)) {
                 fs.rmSync(this.authDir, { recursive: true, force: true });
                 console.log('✅ Tokens limpos. Backup salvo em:', this.credBackupDir);
             }
             
-            // CRÍTICO: Recria o diretório após limpar para evitar erro ENOENT
-            if (!fs.existsSync(this.authDir)) {
-                fs.mkdirSync(this.authDir, { recursive: true });
-                console.log('✅ Diretório de tokens recriado:', this.authDir);
-            }
+            // CRÍTICO: Recria o diretório IMEDIATAMENTE após limpar
+            // Isso deve ser feito ANTES de qualquer tentativa de usar o Baileys
+            // O Baileys precisa do diretório para salvar credenciais
+            fs.mkdirSync(this.authDir, { recursive: true });
+            console.log('✅ Diretório de tokens recriado:', this.authDir);
+            
+            // Aguarda um pouco para garantir que diretório foi criado completamente
+            await new Promise(resolve => setTimeout(resolve, 500));
+            
         } catch (e) {
             console.error('⚠️ Erro ao limpar tokens Baileys:', e);
+            
+            // CRÍTICO: Garante que diretório existe mesmo se limpeza falhar
+            try {
+                if (!fs.existsSync(this.authDir)) {
+                    fs.mkdirSync(this.authDir, { recursive: true });
+                    console.log('✅ Diretório recriado após erro:', this.authDir);
+                }
+            } catch (mkdirErr) {
+                console.error('❌ Erro crítico ao recriar diretório:', mkdirErr.message);
+            }
+            
             // Tenta restaurar do backup se limpeza falhou parcialmente
             try {
-                if (!fs.existsSync(this.authDir) || fs.readdirSync(this.authDir).length === 0) {
+                if (fs.existsSync(this.authDir) && fs.readdirSync(this.authDir).length === 0) {
                     console.log('🔄 Tentando restaurar do backup...');
                     this.restoreCredentialsFromBackup();
                 }
             } catch (restoreErr) {
                 console.error('❌ Erro ao restaurar backup:', restoreErr.message);
-                // Garante que diretório existe mesmo se restaurar falhar
-                if (!fs.existsSync(this.authDir)) {
-                    fs.mkdirSync(this.authDir, { recursive: true });
-                }
             }
         }
     }
@@ -2138,8 +2112,19 @@ Digite o *número* da opção ou *8* para voltar ao menu.`;
 
 
     async sendMessage(chatId, text) {
+        // CRÍTICO: Verifica se socket está realmente conectado antes de enviar
+        if (!this.sock || !this.sock.user || !this.sock.user.id) {
+            throw new Error('Socket não está conectado. Aguarde a conexão ser estabelecida.');
+        }
+        
         const jid = this.normalizeChatId(chatId);
         await this.ensureSocket();
+        
+        // Verifica novamente após ensureSocket
+        if (!this.sock || !this.sock.user || !this.sock.user.id) {
+            throw new Error('Socket não está conectado após ensureSocket. Aguarde a conexão ser estabelecida.');
+        }
+        
         const result = await this.sock.sendMessage(jid, { text });
         this.recordOutgoingMessage(jid, text);
         this.recordResponse(chatId); // Registra tempo de resposta para rate limiting
@@ -2813,8 +2798,20 @@ Digite o *número* da opção ou *8* para voltar ao menu.`;
 
     async ensureSocket() {
         if (!this.sock) {
-            throw new Error('Bot Baileys não está conectado');
+            throw new Error('Socket Baileys não está inicializado. Chame start() primeiro.');
         }
+        
+        // CRÍTICO: Verifica se socket está realmente conectado
+        if (!this.sock.user || !this.sock.user.id) {
+            throw new Error('Socket Baileys não está conectado. Aguarde a conexão ser estabelecida ou escaneie o QR code.');
+        }
+        
+        // Verifica se WebSocket está aberto
+        if (this.sock.ws && this.sock.ws.readyState !== 1) {
+            throw new Error(`Socket Baileys não está conectado (readyState: ${this.sock.ws.readyState}). Aguarde a conexão ser estabelecida.`);
+        }
+        
+        return this.sock;
     }
 
     // Funções de pausa removidas - não usamos painel agora
@@ -3044,15 +3041,31 @@ Digite o *número* da opção ou *8* para voltar ao menu.`;
         
         if (shouldLogDetails) {
             this.lastBadMacLogTime = now;
-            console.error(`❌ ERRO Bad MAC detectado ${context} (${this.badMacErrorCount}/${this.badMacErrorThreshold})`);
+            // MELHORADO: Só mostra erros Bad MAC quando realmente importante
+            // Erros esporádicos são normais e não precisam aparecer nos logs
+            const isNearThreshold = this.badMacErrorCount >= this.badMacErrorThreshold - 3;
+            const isFirstError = this.badMacErrorCount === 1;
+            const isEveryFifth = this.badMacErrorCount % 5 === 0;
             
-            // Só mostra detalhes completos no primeiro erro ou quando próximo do limite
-            if (this.badMacErrorCount === 1 || this.badMacErrorCount >= this.badMacErrorThreshold - 1) {
-                console.error('💡 Isso geralmente indica:');
-                console.error('   - Sessão corrompida ou tokens inválidos após alguns dias');
-                console.error('   - Múltiplas instâncias usando a mesma sessão');
-                console.error('   - Conflito entre diferentes versões do código');
-                console.error(`📁 Diretório de tokens: ${this.authDir}`);
+            if (isFirstError || isNearThreshold || isEveryFifth) {
+                if (isNearThreshold) {
+                    console.error(`⚠️ ERRO Bad MAC: ${this.badMacErrorCount}/${this.badMacErrorThreshold} - Próximo de limpar sessão`);
+                } else if (isFirstError) {
+                    console.error(`⚠️ Erro Bad MAC detectado ${context} (${this.badMacErrorCount}/${this.badMacErrorThreshold})`);
+                    console.error(`💡 Erros esporádicos são normais. Limpeza automática será acionada após ${this.badMacErrorThreshold - 1} erros adicionais em 5 minutos.`);
+                } else {
+                    // A cada 5 erros, mostra mensagem mais discreta
+                    console.error(`⚠️ Erro Bad MAC: ${this.badMacErrorCount}/${this.badMacErrorThreshold} (esporádico - normal)`);
+                }
+                
+                // Log detalhado apenas quando próximo do limite
+                if (isNearThreshold) {
+                    console.error('💡 Isso geralmente indica:');
+                    console.error('   - Sessão corrompida ou tokens inválidos após alguns dias');
+                    console.error('   - Múltiplas instâncias usando a mesma sessão');
+                    console.error('   - Conflito entre diferentes versões do código');
+                    console.error(`📁 Diretório de tokens: ${this.authDir}`);
+                }
             }
         }
         
@@ -3106,7 +3119,10 @@ Digite o *número* da opção ou *8* para voltar ao menu.`;
                 });
             });
         } else if (shouldLogDetails && this.badMacErrorCount < this.badMacErrorThreshold - 1) {
-            console.error(`💡 Limpeza automática será acionada após ${this.badMacErrorThreshold - this.badMacErrorCount} erros adicionais`);
+            // Só mostra mensagem de limpeza automática quando próximo do limite (últimos 3 erros)
+            if (this.badMacErrorCount >= this.badMacErrorThreshold - 3) {
+                console.error(`💡 Limpeza automática será acionada após ${this.badMacErrorThreshold - this.badMacErrorCount} erros adicionais`);
+            }
         }
     }
 

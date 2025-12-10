@@ -7,27 +7,42 @@ yarn-error.log*
 # Arquivos de autenticação do WhatsApp
 .wwebjs_auth/
 auth_info_baileys/
+tokens/
+tokens-*/
+tokens-baileys*/
+tokens-bot*/
+auth-backups/
 
 # Arquivos temporários
 temp/
-tokens/
+temp_audio/
+cache_tts/
+audios/
+avatars/
+files/
+
+# Banco de dados
 data/
-tokens-baileys1/
-tokens-bot1/
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
 
 # Logs
 *.log
 logs/
+pm2-logs/
 
 # Arquivos de sistema
 .DS_Store
 Thumbs.db
+*.swp
+*.swo
 
 # Arquivos de IDE
 .vscode/
 .idea/
-*.swp
-*.swo
+*.code-workspace
 
 # Arquivos de ambiente
 .env
@@ -47,6 +62,7 @@ build/
 # Arquivos de backup
 *.bak
 *.backup
+backup-*/
 
 # Arquivos de PDF gerados (boletos)
 *.pdf
@@ -56,6 +72,23 @@ build/
 *.jpg
 *.jpeg
 *.gif
+*.webp
+
+# Arquivos de áudio temporários
+*.ogg
+*.webm
+*.mp3
+*.wav
 
 # Arquivos de configuração local
 config-local.js
+
+# PM2
+.pm2/
+*.pid
+
+# Scripts temporários (mantém apenas os essenciais)
+*.sh
+*.ps1
+!install.bat
+!start.bat
