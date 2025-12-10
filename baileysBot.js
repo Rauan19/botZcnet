@@ -135,6 +135,13 @@ class BaileysBot {
         this.lastResponseTime = new Map(); // rate limiting por chat
         this.processedMessages = new Map(); // evita processar mensagens duplicadas
         
+        // SISTEMA DE AUTO-RECUPERAÇÃO - GARANTE QUE O BOT NUNCA PARE COMPLETAMENTE
+        this.autoRecoveryEnabled = true; // Sempre ativo
+        this.watchdogInterval = null; // Interval do watchdog
+        this.lastSuccessfulConnection = Date.now(); // Timestamp da última conexão bem-sucedida
+        this.maxTimeWithoutConnection = 5 * 60 * 1000; // 5 minutos sem conexão = força reconexão
+        this.forceReconnectTimeout = null; // Timeout para forçar reconexão mesmo com pauseRequested
+        
         // Contadores para erros Bad MAC (sessão corrompida)
         // AUMENTADO: 10 erros em 5 minutos (antes: 5 em 3 minutos)
         // Isso evita limpezas desnecessárias quando há erros esporádicos normais
@@ -378,9 +385,15 @@ class BaileysBot {
 
         this.started = true;
         this.initialized = true; // Marca como inicializado
+        this.lastSuccessfulConnection = Date.now(); // Atualiza timestamp de conexão
+        
+        // INICIA WATCHDOG DE AUTO-RECUPERAÇÃO
+        this.startWatchdog();
+        
         console.log('✅ Bot Baileys inicializado.');
         console.log('⏳ Aguardando eventos de conexão do WhatsApp...');
         console.log('💡 O QR code aparecerá aqui quando o WhatsApp solicitar.');
+        console.log('🔄 Sistema de auto-recuperação ativado - bot nunca parará completamente');
         console.log('');
         
         // Timeout para verificar se eventos estão sendo recebidos
@@ -392,6 +405,88 @@ class BaileysBot {
                 console.log('💡 Isso é normal se não houver credenciais salvas. Aguarde mais alguns segundos...');
             }
         }, 5000);
+    }
+    
+    /**
+     * WATCHDOG DE AUTO-RECUPERAÇÃO - Verifica periodicamente se o bot está conectado
+     * Se não estiver conectado por muito tempo, força reconexão mesmo com pauseRequested
+     */
+    startWatchdog() {
+        // Limpa watchdog anterior se existir
+        if (this.watchdogInterval) {
+            clearInterval(this.watchdogInterval);
+        }
+        
+        // Verifica a cada 30 segundos se o bot está conectado
+        this.watchdogInterval = setInterval(() => {
+            try {
+                const now = Date.now();
+                const isConnected = this.sock && 
+                                   this.sock.ws && 
+                                   this.sock.ws.readyState === 1 && // 1 = OPEN
+                                   this.started;
+                
+                if (isConnected) {
+                    // Bot está conectado - atualiza timestamp
+                    this.lastSuccessfulConnection = now;
+                    return; // Tudo OK, não faz nada
+                }
+                
+                // Bot NÃO está conectado
+                const timeSinceLastConnection = now - this.lastSuccessfulConnection;
+                
+                // Se passou mais de 5 minutos sem conexão, força reconexão
+                if (timeSinceLastConnection > this.maxTimeWithoutConnection) {
+                    console.log('');
+                    console.log('⚠️⚠️⚠️ WATCHDOG: Bot desconectado há mais de 5 minutos ⚠️⚠️⚠️');
+                    console.log('🔄 Forçando reconexão automática...');
+                    console.log('');
+                    
+                    // Reseta pauseRequested para permitir reconexão
+                    this.pauseRequested = false;
+                    this.started = false; // Permite novo start
+                    
+                    // Limpa timeouts anteriores
+                    if (this.forceReconnectTimeout) {
+                        clearTimeout(this.forceReconnectTimeout);
+                    }
+                    
+                    // Força reconexão após 5 segundos
+                    this.forceReconnectTimeout = setTimeout(() => {
+                        if (!this.started && !this.isRestarting) {
+                            console.log('🔄 Watchdog: Iniciando reconexão forçada...');
+                            this.start().catch(err => {
+                                console.error('❌ Watchdog: Erro ao reconectar:', err.message);
+                                // Tenta novamente em 2 minutos se falhar
+                                setTimeout(() => {
+                                    if (!this.started && !this.isRestarting) {
+                                        console.log('🔄 Watchdog: Segunda tentativa de reconexão...');
+                                        this.start().catch(e => console.error('❌ Watchdog: Falha na segunda tentativa:', e.message));
+                                    }
+                                }, 120000);
+                            });
+                        }
+                    }, 5000);
+                }
+            } catch (e) {
+                // Ignora erros no watchdog para não quebrar o sistema
+                console.error('⚠️ Erro no watchdog (ignorado):', e.message);
+            }
+        }, 30000); // Verifica a cada 30 segundos
+    }
+    
+    /**
+     * Para o watchdog (apenas se realmente necessário)
+     */
+    stopWatchdog() {
+        if (this.watchdogInterval) {
+            clearInterval(this.watchdogInterval);
+            this.watchdogInterval = null;
+        }
+        if (this.forceReconnectTimeout) {
+            clearTimeout(this.forceReconnectTimeout);
+            this.forceReconnectTimeout = null;
+        }
     }
 
     async handleConnectionUpdate(update) {
@@ -440,8 +535,10 @@ class BaileysBot {
             this.reconnectAttempts = 0;
             this.disconnectCount = 0;
             this.lastConnectTime = Date.now();
+            this.lastSuccessfulConnection = Date.now(); // ATUALIZA WATCHDOG - conexão bem-sucedida
             this.isRestarting = false; // Reseta flag de restart quando conecta
             this.lastConnectionError = null; // Limpa erro quando conecta
+            this.pauseRequested = false; // Reseta pause quando conecta com sucesso
             if (this.restartTimeout) {
                 clearTimeout(this.restartTimeout);
                 this.restartTimeout = null;
@@ -637,6 +734,57 @@ class BaileysBot {
             this.lastDisconnectTime = now;
 
             // Códigos que indicam sessão completamente inválida (precisa limpar tokens)
+            // Trata erro 500 (Internal Server Error) - geralmente indica sessão inválida ou problema temporário
+            const isCode500 = (statusCode === 500);
+            
+            if (isCode500) {
+                console.log('⚠️ Erro 500 detectado: Internal Server Error');
+                console.log('💡 Isso geralmente indica:');
+                console.log('   - Sessão inválida ou corrompida');
+                console.log('   - Problema temporário nos servidores do WhatsApp');
+                console.log('   - Tokens expirados ou inválidos');
+                console.log('🧹 Limpando tokens para gerar novo QR e reconectar...');
+                
+                try {
+                    this.cleanupAuthDir();
+                    this.authState = null; // Limpa referência
+                    this.reconnectAttempts = 0;
+                    this.disconnectCount = 0;
+                    this.lastDisconnectTime = 0;
+                    this.lastConnectTime = 0;
+                    this.started = false; // Permite reconexão
+                    
+                    console.log('✅ Tokens limpos. Reconectando em 5 segundos...');
+                    
+                    // Reconecta automaticamente após limpar tokens
+                    setTimeout(() => {
+                        if (!this.pauseRequested) {
+                            console.log('🔄 Tentando reconectar após erro 500...');
+                            this.start().catch(err => {
+                                console.error('❌ Erro ao reconectar após 500:', err.message);
+                                // Tenta novamente após 30 segundos se falhar
+                                setTimeout(() => {
+                                    if (!this.pauseRequested && !this.started) {
+                                        console.log('🔄 Segunda tentativa de reconexão após erro 500...');
+                                        this.start().catch(e => console.error('❌ Falha na segunda tentativa:', e.message));
+                                    }
+                                }, 30000);
+                            });
+                        }
+                    }, 5000);
+                } catch (e) {
+                    console.error('❌ Erro ao limpar tokens:', e.message);
+                    // Mesmo com erro, tenta reconectar
+                    setTimeout(() => {
+                        if (!this.pauseRequested) {
+                            this.start().catch(err => console.error('❌ Erro ao reconectar:', err.message));
+                        }
+                    }, 5000);
+                }
+                
+                return;
+            }
+            
             const mustCleanSession = (
                 statusCode === DisconnectReason.loggedOut ||
                 statusCode === DisconnectReason.badSession
@@ -649,6 +797,24 @@ class BaileysBot {
                 this.disconnectCount = 0;
                 this.lastDisconnectTime = 0;
                 this.lastConnectTime = 0;
+                
+                // Reconecta automaticamente após limpar sessão inválida
+                console.log('🔄 Reconectando em 5 segundos após limpeza de sessão...');
+                setTimeout(() => {
+                    if (!this.pauseRequested) {
+                        this.start().catch(err => {
+                            console.error('❌ Erro ao reconectar após limpeza:', err.message);
+                            // Tenta novamente após 30 segundos
+                            setTimeout(() => {
+                                if (!this.pauseRequested && !this.started) {
+                                    console.log('🔄 Segunda tentativa de reconexão...');
+                                    this.start().catch(e => console.error('❌ Falha na segunda tentativa:', e.message));
+                                }
+                            }, 30000);
+                        });
+                    }
+                }, 5000);
+                
                 return;
             }
 
@@ -2700,6 +2866,8 @@ Digite o *número* da opção ou *8* para voltar ao menu.`;
             this.client = null;
             this.isRestarting = false;
             this.started = false;
+            // NÃO para o watchdog - ele vai detectar desconexão e reconectar automaticamente
+            // O watchdog continua rodando para garantir auto-recuperação
         }
     }
 }
