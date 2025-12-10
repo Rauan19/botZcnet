@@ -55,13 +55,43 @@ class BaileysBot {
             };
         }
         
-        // Intercepta stderr para capturar erros Bad MAC do libsignal que não são capturados pelos handlers
-        // Isso é necessário porque o libsignal escreve diretamente no stderr
+        // Intercepta stderr E stdout para capturar erros Bad MAC e filtrar logs de sessão
+        // Isso é necessário porque o libsignal escreve diretamente no stderr/stdout
         // Também filtra mensagens normais que não são erros reais
         this.originalStderrWrite = process.stderr.write.bind(process.stderr);
+        this.originalStdoutWrite = process.stdout.write.bind(process.stdout);
         this.stderrFilterCount = 0; // Contador para reduzir spam de logs
         this.lastStderrLogTime = 0; // Timestamp do último log filtrado
         const self = this;
+        
+        // Intercepta stdout para filtrar logs de "Closing session" que poluem o console
+        process.stdout.write = function(chunk, encoding, fd) {
+            const message = chunk ? chunk.toString() : '';
+            
+            // Filtra logs enormes de sessão do libsignal
+            if (message.includes('Closing session:') || 
+                message.includes('SessionEntry') ||
+                message.includes('_chains:') ||
+                message.includes('chainKey:') ||
+                message.includes('currentRatchet:') ||
+                message.includes('ephemeralKeyPair:') ||
+                message.includes('indexInfo:') ||
+                message.includes('registrationId:') ||
+                message.includes('remoteIdentityKey:') ||
+                message.includes('pendingPreKey:') ||
+                message.includes('baseKey:') ||
+                message.includes('rootKey:') ||
+                message.includes('pubKey:') ||
+                message.includes('privKey:') ||
+                message.includes('<Buffer')) {
+                // Não escreve - são logs normais de gerenciamento de sessão
+                return true;
+            }
+            
+            // Para outras mensagens, escreve normalmente
+            return self.originalStdoutWrite(chunk, encoding, fd);
+        };
+        
         process.stderr.write = function(chunk, encoding, fd) {
             const message = chunk ? chunk.toString() : '';
             
@@ -70,14 +100,36 @@ class BaileysBot {
                 'Closing open session',
                 'Closing stale open session',
                 'in favor of incoming prekey bundle',
-                'for new outgoing prekey bundle'
+                'for new outgoing prekey bundle',
+                'Closing session:', // Logs enormes de SessionEntry que poluem o console
+                'SessionEntry', // Objetos SessionEntry completos
+                '_chains:', // Parte dos logs de sessão
+                'chainKey:', // Parte dos logs de sessão
+                'currentRatchet:', // Parte dos logs de sessão
+                'ephemeralKeyPair:', // Parte dos logs de sessão
+                'indexInfo:', // Parte dos logs de sessão
+                'registrationId:', // Parte dos logs de sessão
+                'remoteIdentityKey:', // Parte dos logs de sessão
+                'pendingPreKey:', // Parte dos logs de sessão
+                'baseKey:', // Parte dos logs de sessão
+                'rootKey:', // Parte dos logs de sessão
+                'pubKey:', // Parte dos logs de sessão
+                'privKey:', // Parte dos logs de sessão
+                '<Buffer' // Buffers de chaves criptográficas
             ];
             
+            // Verifica se a mensagem contém qualquer uma das strings normais
             const isNormalMessage = normalMessages.some(normal => message.includes(normal));
             
             // Se for mensagem normal, não escreve no stderr (reduz spam)
             if (isNormalMessage) {
                 return true; // Retorna true para indicar que foi "escrito" mas não escreve nada
+            }
+            
+            // Filtra também mensagens que são objetos SessionEntry completos (muito grandes)
+            // Esses logs aparecem quando o libsignal fecha sessões antigas (comportamento normal)
+            if (message.includes('SessionEntry') || message.includes('Closing session')) {
+                return true; // Não escreve - são logs normais de gerenciamento de sessão
             }
             
             // Trata erros Bad MAC reais
@@ -326,11 +378,14 @@ class BaileysBot {
             emitOwnEvents: false,
             generateHighQualityLinkPreview: false,
             // printQRInTerminal foi removido (deprecated) - estamos imprimindo manualmente
-            // Timeouts maiores para evitar desconexões e erro 405
-            connectTimeoutMs: 180000, // 3 minutos (aumentado)
-            defaultQueryTimeoutMs: 180000, // 3 minutos (aumentado)
-            keepAliveIntervalMs: 30000, // Keepalive a cada 30 segundos (menos frequente para evitar detecção)
-            qrTimeout: 180000, // 3 minutos
+            // MELHORADO: Timeouts aumentados para conexões de longa duração
+            // Evita desconexões após minutos/dias de uso
+            connectTimeoutMs: 300000, // 5 minutos (aumentado para conexões lentas)
+            defaultQueryTimeoutMs: 300000, // 5 minutos (aumentado)
+            keepAliveIntervalMs: 25000, // Keepalive a cada 25 segundos (mais frequente para manter conexão)
+            qrTimeout: 300000, // 5 minutos
+            // Configurações adicionais para manter conexão estável
+            shouldReconnectSocket: () => true, // Sempre tenta reconectar se socket cair
             // Configurações para manter conexão
             shouldSyncHistoryMessage: () => false,
             shouldIgnoreJid: () => false,
@@ -781,6 +836,79 @@ class BaileysBot {
             this.started = false;
             this.lastConnectionError = statusCode; // Salva último erro para debug
 
+            // VERIFICA CÓDIGO 515 PRIMEIRO - Stream Errored (restart required)
+            // Esse erro geralmente ocorre após escanear QR code e é temporário
+            const isCode515 = (statusCode === 515);
+            
+            if (isCode515) {
+                console.log(`⚠️ Código 515 detectado: Stream Errored (restart required)`);
+                console.log(`💡 Isso geralmente acontece:`);
+                console.log(`   - Logo após escanear o QR code`);
+                console.log(`   - Durante processo de autenticação`);
+                console.log(`   - WhatsApp precisa reiniciar o stream`);
+                console.log(`\n🔄 Isso é NORMAL após escanear QR. Reconectando automaticamente...`);
+                
+                // Verifica se acabou de escanear QR (menos de 60 segundos)
+                const timeSinceQr = this.qrString ? Date.now() - (this.qrGeneratedTime || 0) : Infinity;
+                const justScannedQr = timeSinceQr < 60000; // 60 segundos
+                
+                if (justScannedQr) {
+                    console.log(`✅ QR code escaneado recentemente. Aguardando 15 segundos para completar autenticação...`);
+                    
+                    // Aguarda mais tempo após escanear QR para completar autenticação
+                    setTimeout(() => {
+                        if (!this.started && !this.pauseRequested) {
+                            console.log('🔄 Reconectando após erro 515 (QR escaneado)...');
+                            this.reconnectAttempts = 0; // Reseta contador
+                            this.start().catch(err => {
+                                console.error('❌ Erro ao reconectar após 515:', err.message);
+                                // Tenta novamente após 30 segundos
+                                setTimeout(() => {
+                                    if (!this.started && !this.pauseRequested) {
+                                        console.log('🔄 Segunda tentativa após erro 515...');
+                                        this.start().catch(e => {
+                                            console.error('❌ Falha na segunda tentativa:', e.message);
+                                            // Tenta mais uma vez após 1 minuto
+                                            setTimeout(() => {
+                                                if (!this.started && !this.pauseRequested) {
+                                                    console.log('🔄 Terceira tentativa após erro 515...');
+                                                    this.start().catch(finalErr => {
+                                                        console.error('❌ Falha na terceira tentativa. Verifique conexão com internet.');
+                                                    });
+                                                }
+                                            }, 60000);
+                                        });
+                                    }
+                                }, 30000);
+                            });
+                        }
+                    }, 15000); // Aguarda 15 segundos após escanear QR
+                    
+                    return;
+                }
+                
+                // Se não foi QR recente, ainda tenta reconectar
+                console.log(`🔄 Reconectando após erro 515 em 10 segundos...`);
+                setTimeout(() => {
+                    if (!this.started && !this.pauseRequested) {
+                        console.log('🔄 Tentando reconectar após erro 515...');
+                        this.reconnectAttempts = 0; // Reseta contador
+                        this.start().catch(err => {
+                            console.error('❌ Erro ao reconectar após 515:', err.message);
+                            // Tenta novamente após 30 segundos
+                            setTimeout(() => {
+                                if (!this.started && !this.pauseRequested) {
+                                    console.log('🔄 Segunda tentativa após erro 515...');
+                                    this.start().catch(e => console.error('❌ Falha na segunda tentativa:', e.message));
+                                }
+                            }, 30000);
+                        });
+                    }
+                }, 10000);
+                
+                return;
+            }
+
             // VERIFICA CÓDIGO 428 - Connection Terminated by Server
             // MELHORADO: Só para se realmente houver múltiplas instâncias E não acabou de gerar QR
             const isCode428 = (statusCode === 428);
@@ -1212,23 +1340,48 @@ class BaileysBot {
             clearInterval(this.keepAliveInterval);
         }
         
-        // Envia keepalive a cada 15 segundos para manter conexão ativa
+        // MELHORADO: Keepalive mais robusto para evitar desconexões
+        // Verifica conexão e envia keepalive a cada 20 segundos
         this.keepAliveInterval = setInterval(() => {
-            if (this.sock && this.started && this.sock.user) {
-                try {
-                    // Envia um ping para manter conexão viva
-                    this.sock.sendPresenceUpdate('available');
-                } catch (e) {
-                    // Ignora erros de keepalive
+            try {
+                // Verifica se socket está realmente conectado
+                const isConnected = this.sock && 
+                                   this.sock.ws && 
+                                   this.sock.ws.readyState === 1 && // 1 = OPEN
+                                   this.started && 
+                                   this.sock.user;
+                
+                if (isConnected) {
+                    // Envia presence update para manter conexão viva
+                    this.sock.sendPresenceUpdate('available').catch(e => {
+                        // Se falhar, pode ser que conexão caiu
+                        console.error('⚠️ Erro no keepalive (pode indicar desconexão):', e.message);
+                    });
+                    
+                    // Atualiza timestamp de última conexão bem-sucedida
+                    this.lastSuccessfulConnection = Date.now();
+                } else {
+                    // Se não está conectado, verifica se precisa reconectar
+                    const timeSinceLastConnection = Date.now() - (this.lastSuccessfulConnection || 0);
+                    
+                    // Se passou mais de 2 minutos sem conexão, tenta reconectar
+                    if (timeSinceLastConnection > 120000 && !this.pauseRequested && !this.isRestarting) {
+                        console.log('⚠️ Keepalive detectou desconexão. Tentando reconectar...');
+                        this.started = false; // Permite reconexão
+                        setTimeout(() => {
+                            if (!this.started && !this.pauseRequested) {
+                                this.start().catch(err => {
+                                    console.error('❌ Erro ao reconectar via keepalive:', err.message);
+                                });
+                            }
+                        }, 5000);
+                    }
                 }
-            } else {
-                // Se não está conectado, para o keepalive
-                if (this.keepAliveInterval) {
-                    clearInterval(this.keepAliveInterval);
-                    this.keepAliveInterval = null;
-                }
+            } catch (e) {
+                // Ignora erros para não quebrar o sistema
+                console.error('⚠️ Erro no keepalive (ignorado):', e.message);
             }
-        }, 15000); // A cada 15 segundos
+        }, 20000); // A cada 20 segundos (mais frequente para manter conexão)
     }
 
     async cleanupAuthDir() {
@@ -3087,9 +3240,12 @@ Digite o *número* da opção ou *8* para voltar ao menu.`;
 
     async stop() {
         try {
-            // Restaura stderr original
+            // Restaura stderr e stdout originais
             if (this.originalStderrWrite) {
                 process.stderr.write = this.originalStderrWrite;
+            }
+            if (this.originalStdoutWrite) {
+                process.stdout.write = this.originalStdoutWrite;
             }
             
             // Cancela restart pendente se existir
