@@ -2112,23 +2112,29 @@ Digite o *número* da opção ou *8* para voltar ao menu.`;
 
 
     async sendMessage(chatId, text) {
-        // CRÍTICO: Verifica se socket está realmente conectado antes de enviar
-        if (!this.sock || !this.sock.user || !this.sock.user.id) {
-            throw new Error('Socket não está conectado. Aguarde a conexão ser estabelecida.');
-        }
-        
         const jid = this.normalizeChatId(chatId);
-        await this.ensureSocket();
+        const sock = await this.ensureSocket();
         
-        // Verifica novamente após ensureSocket
-        if (!this.sock || !this.sock.user || !this.sock.user.id) {
-            throw new Error('Socket não está conectado após ensureSocket. Aguarde a conexão ser estabelecida.');
+        // Se ensureSocket retornou null, socket não está conectado
+        if (!sock || !sock.user || !sock.user.id) {
+            // Não lança erro - apenas retorna sem enviar
+            // Isso evita quebrar o fluxo quando socket está conectando
+            return null;
         }
         
-        const result = await this.sock.sendMessage(jid, { text });
-        this.recordOutgoingMessage(jid, text);
-        this.recordResponse(chatId); // Registra tempo de resposta para rate limiting
-        return result;
+        try {
+            const result = await sock.sendMessage(jid, { text });
+            this.recordOutgoingMessage(jid, text);
+            this.recordResponse(chatId);
+            return result;
+        } catch (err) {
+            // Se erro ao enviar, não quebra o fluxo
+            // Apenas loga se for erro crítico
+            if (!err.message?.includes('not connected') && !err.message?.includes('readyState')) {
+                this.log.error('Erro ao enviar mensagem:', err.message);
+            }
+            return null;
+        }
     }
 
     async sendText(chatId, text) {
@@ -2204,6 +2210,11 @@ Digite o *número* da opção ou *8* para voltar ao menu.`;
     }
 
     async sendMenu(chatId) {
+        // Verifica se socket está conectado antes de enviar
+        if (!this.sock || !this.sock.user || !this.sock.user.id) {
+            return null; // Socket não conectado - não envia menu
+        }
+        
         const menuMsg = `*COMO POSSO AJUDAR?*
 
 *1️⃣ PAGAMENTO / SEGUNDA VIA*
@@ -2222,7 +2233,7 @@ Digite o *número* da opção ou envie *8* para voltar ao menu.`;
             currentStep: null
         });
 
-        await this.sendText(chatId, menuMsg);
+        return await this.sendText(chatId, menuMsg);
     }
 
     isMenuCommand(normalizedText) {
@@ -2798,17 +2809,28 @@ Digite o *número* da opção ou *8* para voltar ao menu.`;
 
     async ensureSocket() {
         if (!this.sock) {
-            throw new Error('Socket Baileys não está inicializado. Chame start() primeiro.');
+            return null; // Socket não inicializado
         }
         
         // CRÍTICO: Verifica se socket está realmente conectado
+        // Se não tem user.id, não está conectado ainda
         if (!this.sock.user || !this.sock.user.id) {
-            throw new Error('Socket Baileys não está conectado. Aguarde a conexão ser estabelecida ou escaneie o QR code.');
+            // Aguarda um pouco - pode estar conectando
+            let attempts = 0;
+            while (attempts < 5 && (!this.sock.user || !this.sock.user.id)) {
+                await new Promise(resolve => setTimeout(resolve, 200));
+                attempts++;
+            }
+            
+            // Se ainda não conectou, retorna null
+            if (!this.sock.user || !this.sock.user.id) {
+                return null;
+            }
         }
         
-        // Verifica se WebSocket está aberto
-        if (this.sock.ws && this.sock.ws.readyState !== 1) {
-            throw new Error(`Socket Baileys não está conectado (readyState: ${this.sock.ws.readyState}). Aguarde a conexão ser estabelecida.`);
+        // Verifica WebSocket apenas se existir (pode não existir em alguns casos)
+        if (this.sock.ws && this.sock.ws.readyState !== undefined && this.sock.ws.readyState !== 1) {
+            return null;
         }
         
         return this.sock;
