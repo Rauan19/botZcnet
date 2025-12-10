@@ -50,7 +50,7 @@
     "@nlpjs/core": "^5.0.0-alpha.5",
     "@nlpjs/lang-pt": "^5.0.0-alpha.5",
     "@nlpjs/nlp": "^5.0.0-alpha.5",
-    "@whiskeysockets/baileys": "^6.7.21",
+    "@whiskeysockets/baileys": "^7.0.0-rc.9",
     "axios": "^1.6.0",
     "better-sqlite3": "^12.4.1",
     "dotenv": "^16.3.1",
