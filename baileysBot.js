@@ -800,13 +800,20 @@ class BaileysBot {
         } else if (connection === 'close') {
             const statusCode = new Boom(lastDisconnect?.error)?.output?.statusCode;
             const errorMessage = lastDisconnect?.error?.message || 'Sem mensagem de erro';
-            console.log('⚠️ Baileys desconectado:', statusCode);
-            console.log(`📋 Detalhes da desconexão: ${errorMessage}`);
-            if (lastDisconnect?.error) {
-                console.log(`🔍 Erro completo:`, JSON.stringify(lastDisconnect.error, null, 2));
+            
+            // CRÍTICO: Verifica se realmente está desconectado antes de marcar
+            // Se ainda tem user.id, pode ser desconexão temporária - não marca como desconectado
+            const hasUser = this.sock && this.sock.user && this.sock.user.id;
+            
+            if (!hasUser) {
+                // Realmente desconectado - processa desconexão
+                this.started = false;
+                this.lastConnectionError = statusCode;
+            } else {
+                // Ainda tem user.id - pode ser reconexão automática ou erro temporário
+                // Não marca como desconectado para evitar loops e QR codes desnecessários
+                return; // Sai sem processar desconexão
             }
-            this.started = false;
-            this.lastConnectionError = statusCode; // Salva último erro para debug
 
             // VERIFICA CÓDIGO 515 PRIMEIRO - Stream Errored (restart required)
             // Esse erro geralmente ocorre após escanear QR code e é temporário
@@ -1330,53 +1337,39 @@ class BaileysBot {
     }
 
     startKeepAlive() {
-        // Limpa keepalive anterior se existir
+        // DESABILITADO: Keepalive estava causando reconexões desnecessárias
+        // O watchdog já faz esse trabalho de forma mais confiável
+        // Mantém apenas o envio de presence update quando conectado
         if (this.keepAliveInterval) {
             clearInterval(this.keepAliveInterval);
         }
         
-        // MELHORADO: Keepalive mais robusto para evitar desconexões
-        // Verifica conexão e envia keepalive a cada 20 segundos
+        // Apenas envia presence update periodicamente - não detecta desconexão
+        // O watchdog faz a detecção de desconexão de forma mais confiável
         this.keepAliveInterval = setInterval(() => {
             try {
-                // Verifica se socket está realmente conectado
-                const isConnected = this.sock && 
-                                   this.sock.ws && 
-                                   this.sock.ws.readyState === 1 && // 1 = OPEN
-                                   this.started && 
-                                   this.sock.user;
+                // Só envia presence se realmente conectado
+                const hasUser = this.sock && this.sock.user && this.sock.user.id;
+                const hasWs = this.sock && this.sock.ws && this.sock.ws.readyState === 1;
                 
-                if (isConnected) {
-                    // Envia presence update para manter conexão viva
-                    this.sock.sendPresenceUpdate('available').catch(e => {
-                        // Se falhar, pode ser que conexão caiu
-                        console.error('⚠️ Erro no keepalive (pode indicar desconexão):', e.message);
-                    });
-                    
-                    // Atualiza timestamp de última conexão bem-sucedida
+                if (hasUser && hasWs && this.started) {
+                    // Atualiza timestamp de conexão
                     this.lastSuccessfulConnection = Date.now();
-                } else {
-                    // Se não está conectado, verifica se precisa reconectar
-                    const timeSinceLastConnection = Date.now() - (this.lastSuccessfulConnection || 0);
                     
-                    // Se passou mais de 2 minutos sem conexão, tenta reconectar
-                    if (timeSinceLastConnection > 120000 && !this.pauseRequested && !this.isRestarting) {
-                        console.log('⚠️ Keepalive detectou desconexão. Tentando reconectar...');
-                        this.started = false; // Permite reconexão
-                        setTimeout(() => {
-                            if (!this.started && !this.pauseRequested) {
-                                this.start().catch(err => {
-                                    console.error('❌ Erro ao reconectar via keepalive:', err.message);
-                                });
-                            }
-                        }, 5000);
-                    }
+                    // Envia presence update para manter conexão viva
+                    this.sock.sendPresenceUpdate('available').catch(() => {
+                        // Erro não é crítico - ignora
+                    });
+                } else if (hasUser && this.started) {
+                    // Se tem user.id mas não tem ws, ainda está conectado
+                    // Apenas atualiza timestamp - não tenta enviar presence
+                    this.lastSuccessfulConnection = Date.now();
                 }
+                // Se não tem user.id, não faz nada - watchdog vai detectar e reconectar
             } catch (e) {
-                // Ignora erros para não quebrar o sistema
-                console.error('⚠️ Erro no keepalive (ignorado):', e.message);
+                // Ignora erros
             }
-        }, 20000); // A cada 20 segundos (mais frequente para manter conexão)
+        }, 60000); // A cada 60 segundos (reduzido para evitar overhead)
     }
 
     async cleanupAuthDir() {
@@ -3102,10 +3095,10 @@ Digite o *número* da opção ou *8* para voltar ao menu.`;
                 return; // Não faz nada se ainda está em cooldown
             }
             
-            // Verifica se o bot está realmente com problemas
-            // Se o socket existe e está marcado como started, o bot provavelmente está funcionando
+            // CRÍTICO: Verifica se o bot está realmente com problemas
+            // Se tem user.id, está conectado mesmo que ws tenha problemas
             // Erros Bad MAC esporádicos são normais e não requerem limpeza se o bot está operacional
-            const isBotWorking = this.sock && this.started && this.sock.ws && this.sock.ws.readyState === 1; // 1 = OPEN
+            const isBotWorking = this.sock && this.started && this.sock.user && this.sock.user.id;
             
             console.error('');
             console.error('⚠️⚠️⚠️ LIMITE DE ERROS BAD MAC ATINGIDO ⚠️⚠️⚠️');
