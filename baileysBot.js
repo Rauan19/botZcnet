@@ -142,6 +142,14 @@ class BaileysBot {
         this.maxTimeWithoutConnection = 5 * 60 * 1000; // 5 minutos sem conexão = força reconexão
         this.forceReconnectTimeout = null; // Timeout para forçar reconexão mesmo com pauseRequested
         
+        // SISTEMA ROBUSTO DE AUTENTICAÇÃO - EVITA PERDA DE SESSÃO
+        this.saveCreds = null; // Função de salvamento de credenciais
+        this.credBackupDir = path.join(__dirname, 'auth-backups'); // Diretório de backup
+        this.lastCredSave = 0; // Timestamp do último salvamento
+        this.credSaveInterval = null; // Interval para salvamento periódico
+        this.sessionValidationInterval = null; // Interval para validação periódica da sessão
+        this.minCredSaveInterval = 30000; // Salva credenciais no mínimo a cada 30 segundos
+        
         // Contadores para erros Bad MAC (sessão corrompida)
         // AUMENTADO: 10 erros em 5 minutos (antes: 5 em 3 minutos)
         // Isso evita limpezas desnecessárias quando há erros esporádicos normais
@@ -273,11 +281,35 @@ class BaileysBot {
         // Verifica se há credenciais salvas
         const hasCredentials = state.creds && state.creds.me;
         console.log(`🔐 Estado de autenticação: ${hasCredentials ? 'Credenciais encontradas' : 'Sem credenciais (precisa escanear QR)'}`);
-        if (hasCredentials) {
+        
+        // MELHORADO: Se não há credenciais, tenta restaurar do backup
+        if (!hasCredentials) {
+            console.log('🔄 Tentando restaurar credenciais do backup...');
+            const restored = this.restoreCredentialsFromBackup();
+            if (restored) {
+                // Recarrega estado após restaurar
+                const { state: restoredState, saveCreds: restoredSaveCreds } = await useMultiFileAuthState(this.authDir);
+                this.saveCreds = restoredSaveCreds;
+                this.authState = restoredState;
+                const hasRestoredCreds = restoredState.creds && restoredState.creds.me;
+                if (hasRestoredCreds) {
+                    console.log('✅ Credenciais restauradas do backup com sucesso!');
+                    console.log(`📱 Conectado como: ${restoredState.creds.me?.id || 'N/A'}`);
+                }
+            }
+        } else {
             console.log(`📱 Conectado como: ${state.creds.me?.id || 'N/A'}`);
             // Verifica se credenciais estão válidas
             if (!state.creds.registered || !state.creds.account) {
                 console.log('⚠️ Credenciais podem estar inválidas ou incompletas');
+                // Tenta restaurar do backup se credenciais parecem inválidas
+                console.log('🔄 Tentando restaurar credenciais válidas do backup...');
+                const restored = this.restoreCredentialsFromBackup();
+                if (restored) {
+                    const { state: restoredState, saveCreds: restoredSaveCreds } = await useMultiFileAuthState(this.authDir);
+                    this.saveCreds = restoredSaveCreds;
+                    this.authState = restoredState;
+                }
             }
         }
 
@@ -341,10 +373,29 @@ class BaileysBot {
         console.log('📡 Event listeners registrados. Aguardando eventos de conexão...');
 
         // Salva credenciais sempre que atualizar (silenciosamente)
+        // MELHORADO: Salva imediatamente e cria backup
         this.sock.ev.on('creds.update', () => {
-            // Log removido para reduzir verbosidade - credenciais são salvas automaticamente
-            saveCreds();
+            try {
+                // Salva credenciais imediatamente
+                saveCreds();
+                this.lastCredSave = Date.now();
+                
+                // Cria backup periódico (a cada 5 minutos)
+                const now = Date.now();
+                if (now - (this.lastCredBackup || 0) > 5 * 60 * 1000) {
+                    this.backupCredentials();
+                    this.lastCredBackup = now;
+                }
+            } catch (e) {
+                console.error('⚠️ Erro ao salvar credenciais (continuando):', e.message);
+            }
         });
+        
+        // INICIA SALVAMENTO PERIÓDICO DE CREDENCIAIS (a cada 30 segundos)
+        this.startPeriodicCredSave();
+        
+        // INICIA VALIDAÇÃO PERIÓDICA DA SESSÃO (a cada 2 minutos)
+        this.startSessionValidation();
 
         this.sock.ev.on('messages.upsert', (payload) => {
             this.handleMessagesUpsert(payload).catch(err => {
@@ -486,6 +537,161 @@ class BaileysBot {
         if (this.forceReconnectTimeout) {
             clearTimeout(this.forceReconnectTimeout);
             this.forceReconnectTimeout = null;
+        }
+    }
+    
+    /**
+     * SALVAMENTO PERIÓDICO DE CREDENCIAIS - Garante que credenciais sejam salvas regularmente
+     * Mesmo se creds.update não disparar, salva a cada 30 segundos
+     */
+    startPeriodicCredSave() {
+        // Limpa intervalo anterior se existir
+        if (this.credSaveInterval) {
+            clearInterval(this.credSaveInterval);
+        }
+        
+        this.credSaveInterval = setInterval(() => {
+            try {
+                // Só salva se passou tempo suficiente desde último salvamento
+                const now = Date.now();
+                if (now - this.lastCredSave > this.minCredSaveInterval && this.saveCreds) {
+                    this.saveCreds();
+                    this.lastCredSave = now;
+                }
+            } catch (e) {
+                // Ignora erros para não quebrar o sistema
+                console.error('⚠️ Erro no salvamento periódico (ignorado):', e.message);
+            }
+        }, 30000); // A cada 30 segundos
+    }
+    
+    /**
+     * VALIDAÇÃO PERIÓDICA DA SESSÃO - Verifica se a sessão ainda está válida
+     * Se detectar problemas, tenta recuperar antes que a sessão seja invalidada
+     */
+    startSessionValidation() {
+        // Limpa intervalo anterior se existir
+        if (this.sessionValidationInterval) {
+            clearInterval(this.sessionValidationInterval);
+        }
+        
+        this.sessionValidationInterval = setInterval(() => {
+            try {
+                // Verifica se socket está conectado e válido
+                const isConnected = this.sock && 
+                                   this.sock.ws && 
+                                   this.sock.ws.readyState === 1;
+                
+                // Verifica se credenciais existem e são válidas
+                const hasValidCreds = this.authState?.creds?.me && 
+                                     this.authState?.creds?.registered;
+                
+                // Se está conectado mas credenciais parecem inválidas, força salvamento
+                if (isConnected && hasValidCreds && this.saveCreds) {
+                    // Força salvamento para garantir que credenciais estão atualizadas
+                    this.saveCreds();
+                    this.lastCredSave = Date.now();
+                }
+                
+                // Se não está conectado mas tem credenciais válidas, pode ser problema temporário
+                // Não faz nada - o watchdog vai detectar e reconectar
+            } catch (e) {
+                // Ignora erros para não quebrar o sistema
+                console.error('⚠️ Erro na validação de sessão (ignorado):', e.message);
+            }
+        }, 120000); // A cada 2 minutos
+    }
+    
+    /**
+     * BACKUP DE CREDENCIAIS - Cria backup antes de limpar ou quando necessário
+     */
+    backupCredentials() {
+        try {
+            if (!fs.existsSync(this.authDir)) {
+                return; // Não há nada para fazer backup
+            }
+            
+            // Cria diretório de backup se não existir
+            if (!fs.existsSync(this.credBackupDir)) {
+                fs.mkdirSync(this.credBackupDir, { recursive: true });
+            }
+            
+            // Cria backup com timestamp
+            const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+            const backupPath = path.join(this.credBackupDir, `backup-${timestamp}`);
+            
+            // Copia arquivos de autenticação
+            const files = fs.readdirSync(this.authDir);
+            fs.mkdirSync(backupPath, { recursive: true });
+            
+            for (const file of files) {
+                const sourcePath = path.join(this.authDir, file);
+                const destPath = path.join(backupPath, file);
+                fs.copyFileSync(sourcePath, destPath);
+            }
+            
+            // Mantém apenas os 5 backups mais recentes
+            const backups = fs.readdirSync(this.credBackupDir)
+                .map(name => ({
+                    name,
+                    path: path.join(this.credBackupDir, name),
+                    time: fs.statSync(path.join(this.credBackupDir, name)).mtimeMs
+                }))
+                .sort((a, b) => b.time - a.time);
+            
+            // Remove backups antigos (mantém apenas 5)
+            for (let i = 5; i < backups.length; i++) {
+                fs.rmSync(backups[i].path, { recursive: true, force: true });
+            }
+            
+        } catch (e) {
+            console.error('⚠️ Erro ao criar backup de credenciais:', e.message);
+        }
+    }
+    
+    /**
+     * RESTAURA BACKUP DE CREDENCIAIS - Restaura do backup mais recente
+     */
+    restoreCredentialsFromBackup() {
+        try {
+            if (!fs.existsSync(this.credBackupDir)) {
+                return false; // Não há backups
+            }
+            
+            const backups = fs.readdirSync(this.credBackupDir)
+                .map(name => ({
+                    name,
+                    path: path.join(this.credBackupDir, name),
+                    time: fs.statSync(path.join(this.credBackupDir, name)).mtimeMs
+                }))
+                .sort((a, b) => b.time - a.time);
+            
+            if (backups.length === 0) {
+                return false; // Não há backups
+            }
+            
+            // Restaura do backup mais recente
+            const latestBackup = backups[0].path;
+            
+            // Limpa diretório atual
+            if (fs.existsSync(this.authDir)) {
+                fs.rmSync(this.authDir, { recursive: true, force: true });
+            }
+            fs.mkdirSync(this.authDir, { recursive: true });
+            
+            // Copia arquivos do backup
+            const files = fs.readdirSync(latestBackup);
+            for (const file of files) {
+                const sourcePath = path.join(latestBackup, file);
+                const destPath = path.join(this.authDir, file);
+                fs.copyFileSync(sourcePath, destPath);
+            }
+            
+            console.log('✅ Credenciais restauradas do backup:', latestBackup);
+            return true;
+        } catch (e) {
+            console.error('❌ Erro ao restaurar backup:', e.message);
+            return false;
         }
     }
 
@@ -746,7 +952,7 @@ class BaileysBot {
                 console.log('🧹 Limpando tokens para gerar novo QR e reconectar...');
                 
                 try {
-                    this.cleanupAuthDir();
+                    await this.cleanupAuthDir();
                     this.authState = null; // Limpa referência
                     this.reconnectAttempts = 0;
                     this.disconnectCount = 0;
@@ -792,7 +998,7 @@ class BaileysBot {
 
             if (mustCleanSession) {
                 console.log('🧹 Sessão Baileys inválida (código:', statusCode, '). Limpando tokens para gerar novo QR.');
-                this.cleanupAuthDir();
+                await this.cleanupAuthDir();
                 this.reconnectAttempts = 0;
                 this.disconnectCount = 0;
                 this.lastDisconnectTime = 0;
@@ -837,7 +1043,7 @@ class BaileysBot {
                 if (!hasValidCredentials && this.reconnectAttempts === 0) {
                     console.log(`\n🧹 Sem credenciais válidas detectadas. Limpando tokens para forçar novo QR...`);
                     try {
-                        this.cleanupAuthDir();
+                        await this.cleanupAuthDir();
                         this.authState = null; // Limpa referência
                         console.log(`✅ Tokens limpos. Próxima tentativa gerará novo QR code.`);
                     } catch (e) {
@@ -995,13 +1201,30 @@ class BaileysBot {
         }, 15000); // A cada 15 segundos
     }
 
-    cleanupAuthDir() {
+    async cleanupAuthDir() {
         try {
+            // MELHORADO: Cria backup ANTES de limpar
+            console.log('💾 Criando backup de credenciais antes de limpar...');
+            this.backupCredentials();
+            
+            // Aguarda um pouco para garantir que backup foi criado
+            await new Promise(resolve => setTimeout(resolve, 1000));
+            
             if (fs.existsSync(this.authDir)) {
                 fs.rmSync(this.authDir, { recursive: true, force: true });
+                console.log('✅ Tokens limpos. Backup salvo em:', this.credBackupDir);
             }
         } catch (e) {
             console.error('⚠️ Erro ao limpar tokens Baileys:', e);
+            // Tenta restaurar do backup se limpeza falhou parcialmente
+            try {
+                if (!fs.existsSync(this.authDir) || fs.readdirSync(this.authDir).length === 0) {
+                    console.log('🔄 Tentando restaurar do backup...');
+                    this.restoreCredentialsFromBackup();
+                }
+            } catch (restoreErr) {
+                console.error('❌ Erro ao restaurar backup:', restoreErr.message);
+            }
         }
     }
 
