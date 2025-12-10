@@ -1501,26 +1501,7 @@
         
         <div class="message-input-container" id="messageInputContainer" style="display: none;">
           <div class="message-input-wrapper">
-            <button class="audio-btn" id="audioBtn" title="Gravar áudio">
-              <span id="audioIcon">🎤</span>
-            </button>
-            <div class="attach-btn-wrapper" style="position: relative;">
-              <button class="audio-btn" id="attachBtn" title="Anexar arquivo ou imagem">
-                <span>📎</span>
-              </button>
-              <div class="attach-menu" id="attachMenu" style="display: none;">
-                <button class="attach-menu-item" id="attachImageBtn">
-                  <span>🖼️</span>
-                  <span>Imagem</span>
-                </button>
-                <button class="attach-menu-item" id="attachFileBtn">
-                  <span>📎</span>
-                  <span>Arquivo</span>
-                </button>
-              </div>
-            </div>
-            <input type="file" id="fileInput" accept="*/*" style="display: none;">
-            <input type="file" id="imageInput" accept="image/*" style="display: none;">
+            <!-- Botões de upload removidos para economizar memória - apenas visualização -->
             <input type="text" 
                    class="message-input" 
                    id="messageInput" 
@@ -1529,14 +1510,6 @@
             <button class="btn btn-primary send-btn" id="sendBtn">
               <span>Enviar</span>
             </button>
-          </div>
-          <div class="audio-recording" id="audioRecording" style="display: none;">
-            <div class="recording-indicator">
-              <span class="recording-dot"></span>
-              <span id="recordingTime">00:00</span>
-            </div>
-            <button class="btn btn-secondary" id="cancelAudio">Cancelar</button>
-            <button class="btn btn-primary" id="sendAudio">Enviar</button>
           </div>
         </div>
       </section>
@@ -2838,12 +2811,14 @@
       }
     }
 
-    let mediaRecorder = null;
-    let audioChunks = [];
-    let recordingStartTime = null;
-    let recordingTimer = null;
-    let savedStream = null; // Mantém o stream salvo para reutilizar
+    // Variáveis de gravação removidas - funcionalidade de upload desabilitada
+    // let mediaRecorder = null;
+    // let audioChunks = [];
+    // let recordingStartTime = null;
+    // let recordingTimer = null;
+    // let savedStream = null;
 
+    /* Funções de upload/gravação REMOVIDAS para economizar memória - apenas visualização mantida
     async function startRecording() {
       if (!currentChatId) {
         alert('Selecione uma conversa primeiro');
@@ -3043,6 +3018,7 @@
       audioChunks = [];
       stopRecording();
     }
+    */
 
     // Função para reproduzir áudio
     async function playAudio(button) {
@@ -3152,46 +3128,13 @@
       filterChats(e.target.value);
     });
     document.getElementById('sendBtn').addEventListener('click', sendMessage);
-    document.getElementById('audioBtn').addEventListener('click', startRecording);
-    document.getElementById('sendAudio').addEventListener('click', sendRecordedAudio);
-    document.getElementById('cancelAudio').addEventListener('click', cancelRecording);
     document.getElementById('menuToggle').addEventListener('click', toggleSidebar);
     
-    // Menu de anexos
-    const attachBtn = document.getElementById('attachBtn');
-    const attachMenu = document.getElementById('attachMenu');
-    const attachImageBtn = document.getElementById('attachImageBtn');
-    const attachFileBtn = document.getElementById('attachFileBtn');
-    
-    // Mostra/esconde menu ao clicar no botão de anexo
-    attachBtn.addEventListener('click', (e) => {
-      e.stopPropagation();
-      const isVisible = attachMenu.style.display === 'block';
-      attachMenu.style.display = isVisible ? 'none' : 'block';
-    });
-    
-    // Fecha menu ao clicar fora
-    document.addEventListener('click', (e) => {
-      if (!attachBtn.contains(e.target) && !attachMenu.contains(e.target)) {
-        attachMenu.style.display = 'none';
-      }
-    });
-    
-    // Opção de imagem no menu
-    attachImageBtn.addEventListener('click', (e) => {
-      e.stopPropagation();
-      attachMenu.style.display = 'none';
-      document.getElementById('imageInput').click();
-    });
-    
-    // Opção de arquivo no menu
-    attachFileBtn.addEventListener('click', (e) => {
-      e.stopPropagation();
-      attachMenu.style.display = 'none';
-      document.getElementById('fileInput').click();
-    });
-    
-    // Enviar imagem
+    // Funcionalidades de upload removidas para economizar memória
+    // Apenas visualização de mensagens mantida
+    /*
+    // Menu de anexos - REMOVIDO
+    // Enviar imagem - REMOVIDO
     document.getElementById('imageInput').addEventListener('change', async (e) => {
       const file = e.target.files[0];
       if (!file) return;
@@ -3297,7 +3240,9 @@
       }
     });
     
-    // Verifica se está em contexto seguro (HTTPS ou localhost) para habilitar gravação de áudio
+    // Verificação de suporte de áudio - REMOVIDA
+    */
+    /*
     (function checkAudioSupport() {
       const isSecureContext = window.isSecureContext || 
                              location.protocol === 'https:' || 
@@ -3334,6 +3279,7 @@
         }
       }
     })();
+    */
     
     // Enter para enviar
     document.getElementById('messageInput').addEventListener('keypress', (e) => {

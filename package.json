@@ -6,9 +6,9 @@
   "scripts": {
     "start": "node index.js",
     "start:baileys": "cross-env WHATSAPP_PROVIDER=baileys node index.js",
-    "start:bot1": "cross-env WHATSAPP_PROVIDER=baileys PORT=3009 BAILEYS_SESSION_ID=bot1 node index.js",
-    "start:bot2": "cross-env WHATSAPP_PROVIDER=baileys PORT=3010 BAILEYS_SESSION_ID=bot2 node index.js",
-    "start:bot3": "cross-env WHATSAPP_PROVIDER=baileys PORT=3011 BAILEYS_SESSION_ID=bot3 node index.js",
+    "start:bot1": "cross-env WHATSAPP_PROVIDER=baileys PORT=3009 BAILEYS_SESSION_ID=bot1 node --max-old-space-size=4096 index.js",
+    "start:bot2": "cross-env WHATSAPP_PROVIDER=baileys PORT=3010 BAILEYS_SESSION_ID=bot2 node --max-old-space-size=4096 index.js",
+    "start:bot3": "cross-env WHATSAPP_PROVIDER=baileys PORT=3011 BAILEYS_SESSION_ID=bot3 node --max-old-space-size=4096 index.js",
     "dev": "cross-env WHATSAPP_PROVIDER=baileys nodemon index.js --ignore temp_audio --ignore data --ignore tokens --ignore tokens-baileys",
     "list-clients": "node listClients.js",
     "list-all-clients": "node listAllClients.js",

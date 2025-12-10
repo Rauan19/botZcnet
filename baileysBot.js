@@ -136,11 +136,15 @@ class BaileysBot {
         this.processedMessages = new Map(); // evita processar mensagens duplicadas
         
         // Contadores para erros Bad MAC (sessão corrompida)
+        // AUMENTADO: 10 erros em 5 minutos (antes: 5 em 3 minutos)
+        // Isso evita limpezas desnecessárias quando há erros esporádicos normais
         this.badMacErrorCount = 0; // Contador de erros Bad MAC consecutivos
-        this.badMacErrorThreshold = 5; // Limite de erros antes de limpar sessão (reduzido para acionar mais rápido)
+        this.badMacErrorThreshold = 10; // Limite de erros antes de limpar sessão
         this.lastBadMacErrorTime = 0; // Timestamp do último erro Bad MAC
-        this.badMacErrorWindow = 3 * 60 * 1000; // Janela de 3 minutos para contar erros (reduzida)
+        this.badMacErrorWindow = 5 * 60 * 1000; // Janela de 5 minutos para contar erros (antes: 3 minutos)
         this.lastBadMacLogTime = 0; // Timestamp do último log detalhado de Bad MAC
+        this.lastCleanupTime = 0; // Timestamp da última limpeza (evita loops)
+        this.cleanupCooldown = 10 * 60 * 1000; // Cooldown de 10 minutos entre limpezas
         
         
         // Tratamento global de erros não capturados - GARANTE que o bot nunca pare
@@ -2398,10 +2402,14 @@ Digite o *número* da opção ou *8* para voltar ao menu.`;
         // Proteção contra chamadas antes da inicialização completa
         if (typeof this.badMacErrorCount === 'undefined') {
             this.badMacErrorCount = 0;
-            this.badMacErrorThreshold = 5;
+            // AUMENTADO: 10 erros em 5 minutos (antes: 5 em 3 minutos)
+            // Isso evita limpezas desnecessárias quando há erros esporádicos normais
+            this.badMacErrorThreshold = 10;
             this.lastBadMacErrorTime = 0;
-            this.badMacErrorWindow = 3 * 60 * 1000;
+            this.badMacErrorWindow = 5 * 60 * 1000; // 5 minutos (antes: 3 minutos)
             this.lastBadMacLogTime = 0; // Timestamp do último log detalhado
+            this.lastCleanupTime = 0; // Timestamp da última limpeza (evita loops)
+            this.cleanupCooldown = 10 * 60 * 1000; // Cooldown de 10 minutos entre limpezas
         }
         
         const now = Date.now();
@@ -2436,13 +2444,42 @@ Digite o *número* da opção ou *8* para voltar ao menu.`;
         // Se atingiu o limite de erros, limpa a sessão e reconecta
         // IMPORTANTE: Isso é feito de forma assíncrona e não bloqueia o bot
         if (this.badMacErrorCount >= this.badMacErrorThreshold) {
+            // PROTEÇÃO: Evita limpezas em loop - só limpa se passou o cooldown
+            const timeSinceLastCleanup = now - (this.lastCleanupTime || 0);
+            if (timeSinceLastCleanup < this.cleanupCooldown) {
+                const remainingCooldown = Math.round((this.cleanupCooldown - timeSinceLastCleanup) / 1000);
+                console.error(`⏸️ Limpeza recente detectada. Aguardando ${remainingCooldown}s antes de nova limpeza...`);
+                return; // Não faz nada se ainda está em cooldown
+            }
+            
+            // Verifica se o bot está realmente com problemas
+            // Se o socket existe e está marcado como started, o bot provavelmente está funcionando
+            // Erros Bad MAC esporádicos são normais e não requerem limpeza se o bot está operacional
+            const isBotWorking = this.sock && this.started && this.sock.ws && this.sock.ws.readyState === 1; // 1 = OPEN
+            
             console.error('');
             console.error('⚠️⚠️⚠️ LIMITE DE ERROS BAD MAC ATINGIDO ⚠️⚠️⚠️');
             const timeWindow = Math.round((now - (this.lastBadMacErrorTime - this.badMacErrorWindow)) / 1000);
             console.error(`   ${this.badMacErrorCount} erros em ${timeWindow} segundos`);
+            
+            // Se o bot está funcionando (socket conectado), apenas reduz o contador
+            // Erros Bad MAC esporádicos são comuns e não indicam problema real se o bot está operacional
+            if (isBotWorking) {
+                console.error('💡 Bot está conectado e funcionando. Erros Bad MAC são esporádicos e normais.');
+                console.error('🔄 Reduzindo contador - limpeza será feita apenas se conexão cair...');
+                // Reduz contador significativamente (mantém apenas 30%) para evitar limpezas desnecessárias
+                this.badMacErrorCount = Math.max(1, Math.floor(this.badMacErrorThreshold * 0.3));
+                // Reseta parcialmente o tempo para dar mais margem
+                this.lastBadMacErrorTime = now - (this.badMacErrorWindow * 0.5);
+                return;
+            }
+            
             console.error('🔄 Limpando sessão corrompida e forçando reconexão...');
             console.error('💡 O bot continuará funcionando durante a limpeza!');
             console.error('');
+            
+            // Marca tempo da limpeza
+            this.lastCleanupTime = now;
             
             // Limpa a sessão e reconecta de forma assíncrona (não bloqueia)
             // Usa setImmediate para não bloquear o event loop
@@ -2532,10 +2569,11 @@ Digite o *número* da opção ou *8* para voltar ao menu.`;
                 console.log(`✅ ${cleanedCount} arquivos de sessão removidos (credenciais principais preservadas)`);
             }
             
-            // Reseta contadores
+            // Reseta contadores (mas mantém lastCleanupTime para cooldown)
             this.badMacErrorCount = 0;
             this.lastBadMacErrorTime = 0;
             this.reconnectAttempts = 0;
+            // lastCleanupTime já foi setado antes da limpeza, não reseta aqui
             
             console.log('🔄 Aguardando 3 segundos antes de reconectar...');
             await new Promise(resolve => setTimeout(resolve, 3000));

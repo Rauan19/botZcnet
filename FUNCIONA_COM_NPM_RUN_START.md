@@ -89,3 +89,4 @@ this.bot = new BotClass();
 
 Você pode continuar usando `npm run start:bot1` normalmente! O código já está otimizado e só carrega o Baileys, economizando memória automaticamente! 🚀
 
+

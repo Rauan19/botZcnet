@@ -189,3 +189,4 @@ pm2 restart ecosystem.config.js
 3. **Restarts**: Não deve ter mais de 5 restarts por hora
 4. **Heap**: Monitorar com `pm2 monit`
 
+

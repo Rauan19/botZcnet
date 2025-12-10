@@ -132,3 +132,4 @@ echo "  pm2 restart $BOT_NAME      - Reiniciar"
 echo "  pm2 stop $BOT_NAME         - Parar"
 echo ""
 
+

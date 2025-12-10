@@ -84,3 +84,4 @@ echo "  - Logs do Baileys estão DESATIVADOS (BAILEYS_LOG_LEVEL=silent)"
 echo "  - Heap aumentado para 4GB (--max-old-space-size=4096)"
 echo ""
 
+

@@ -5,7 +5,7 @@ module.exports = {
       script: 'index.js',
       interpreter: 'node',
       // Aumenta heap para evitar estouro de memória (4GB)
-      node_args: '--max-old-space-size=4096 --max-snapshots=1',
+      node_args: '--max-old-space-size=4096',
       // Variáveis de ambiente
       env: {
         WHATSAPP_PROVIDER: 'baileys',
@@ -40,7 +40,7 @@ module.exports = {
       name: 'bot2',
       script: 'index.js',
       interpreter: 'node',
-      node_args: '--max-old-space-size=4096 --max-snapshots=1',
+      node_args: '--max-old-space-size=4096',
       env: {
         WHATSAPP_PROVIDER: 'baileys',
         PORT: '3010',
@@ -66,7 +66,7 @@ module.exports = {
       name: 'bot3',
       script: 'index.js',
       interpreter: 'node',
-      node_args: '--max-old-space-size=4096 --max-snapshots=1',
+      node_args: '--max-old-space-size=4096',
       env: {
         WHATSAPP_PROVIDER: 'baileys',
         PORT: '3011',

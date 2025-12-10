@@ -149,3 +149,4 @@ pm2 start ecosystem.config.js --only bot1
 
 Com `WHATSAPP_PROVIDER=baileys`, apenas o Baileys é carregado, economizando **~500 MB de memória**! 🎉
 
+

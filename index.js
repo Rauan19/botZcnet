@@ -20,16 +20,47 @@ function loadBotModule(provider) {
     }
 }
 
-const zcBillService = require('./services/zcBillService');
-const zcClientService = require('./services/zcClientService');
+// LAZY LOADING de módulos pesados - carrega apenas quando necessário
+let zcBillService = null;
+let zcClientService = null;
+let voiceModule = null;
+let multer = null;
+
+// Funções para carregar módulos sob demanda
+function getZcBillService() {
+    if (!zcBillService) {
+        zcBillService = require('./services/zcBillService');
+    }
+    return zcBillService;
+}
+
+function getZcClientService() {
+    if (!zcClientService) {
+        zcClientService = require('./services/zcClientService');
+    }
+    return zcClientService;
+}
+
+function getVoiceModule() {
+    if (!voiceModule) {
+        voiceModule = require('./voice');
+    }
+    return voiceModule;
+}
+
+function getMulter() {
+    if (!multer) {
+        multer = require('multer');
+    }
+    return multer;
+}
+
 const express = require('express');
 const path = require('path');
 const messageStore = require('./database'); // Carrega e inicializa o banco
-const multer = require('multer');
 const fs = require('fs');
 const https = require('https');
 const crypto = require('crypto');
-const { convertToOpus, sendPTT } = require('./voice');
 
 // Configuração de limpeza automática de arquivos PDF antigos
 const CLEANUP_INTERVAL = 30 * 60 * 1000; // 30 minutos
@@ -180,7 +211,7 @@ class App {
                 // Bot parado
                 
                 // Limpa arquivos temporários
-                zcBillService.cleanupOldPDFs(0); // Remove todos os arquivos
+                getZcBillService().cleanupOldPDFs(0); // Remove todos os arquivos
                 // Limpeza concluída
                 
                 process.exit(0);
@@ -223,7 +254,7 @@ class App {
     setupCleanup() {
         setInterval(() => {
             try {
-                zcBillService.cleanupOldPDFs();
+                getZcBillService().cleanupOldPDFs();
             } catch (error) {
                 console.error('❌ Erro na limpeza automática:', error);
             }
@@ -361,34 +392,8 @@ class App {
                 }
             });
             
-            // Configuração do multer para upload de áudio, imagens e arquivos
-            const uploadDir = path.join(__dirname, 'temp_audio');
-            if (!fs.existsSync(uploadDir)) {
-                fs.mkdirSync(uploadDir, { recursive: true });
-            }
-            
-            const upload = multer({
-                dest: uploadDir,
-                limits: { fileSize: 16 * 1024 * 1024 } // 16MB
-            });
-            
-            const uploadImage = multer({
-                dest: uploadDir,
-                limits: { fileSize: 16 * 1024 * 1024 }, // 16MB
-                fileFilter: (req, file, cb) => {
-                    // Aceita apenas imagens
-                    if (file.mimetype.startsWith('image/')) {
-                        cb(null, true);
-                    } else {
-                        cb(new Error('Apenas imagens são permitidas'));
-                    }
-                }
-            });
-            
-            const uploadFile = multer({
-                dest: uploadDir,
-                limits: { fileSize: 16 * 1024 * 1024 } // 16MB
-            });
+            // Multer e upload removidos - funcionalidades de áudio/imagem/arquivo desabilitadas para economizar memória
+            // Isso economiza ~20-30 MB de memória (multer + processamento de arquivos)
 
             // API: estatísticas do dashboard
             app.get('/api/stats', (req, res) => {
@@ -581,70 +586,24 @@ class App {
                 }
             });
 
-            // API: baixar áudio
-            // Aceita token via query string ou header Authorization
+            // APIs de áudio/imagem/arquivo REMOVIDAS para economizar memória
+            // Endpoints desabilitados:
+            // - /api/chats/:chatId/audio/:audioId (GET)
+            // - /api/chats/:id/send-audio (POST)
+            // - /api/chats/:id/send-image (POST)
+            // - /api/chats/:id/send-file (POST)
+            
+            // API: baixar áudio - DESABILITADA
             app.get('/api/chats/:chatId/audio/:audioId', (req, res) => {
-                try {
-                    // Verifica token via query string ou header
-                    let token = req.query.token || (req.headers['authorization'] && req.headers['authorization'].split(' ')[1]);
-                    
-                    // Decodifica o token se vier via query string (pode estar URL-encoded)
-                    if (token && req.query.token) {
-                        try {
-                            token = decodeURIComponent(token);
-                        } catch (e) {
-                            // Se falhar ao decodificar, usa o token original
-                        }
-                    }
-                    
-                    // Se token está vazio (string vazia), também considera como não fornecido
-                    if (!token || token.trim() === '') {
-                        console.log('❌ Token não fornecido para áudio:', req.params.audioId);
-                        return res.status(401).json({ error: 'Token não fornecido' });
-                    }
-                    
-                    const tokenData = validateToken(token);
-                    if (!tokenData) {
-                        console.log('❌ Token inválido ou expirado para áudio:', req.params.audioId);
-                        return res.status(401).json({ error: 'Token inválido ou expirado' });
-                    }
-                    
-                    const { audioId } = req.params;
-                    
-                    // Garante que o diretório existe
-                    const audioDir = path.join(__dirname, 'audios');
-                    if (!fs.existsSync(audioDir)) {
-                        fs.mkdirSync(audioDir, { recursive: true });
-                    }
-                    
-                    // Busca o arquivo salvo
-                    const audioPath = path.join(audioDir, `${audioId}.ogg`);
-                    
-                    console.log(`🔍 Buscando áudio: ${audioPath}`);
-                    
-                    if (!fs.existsSync(audioPath)) {
-                        console.error(`❌ Áudio não encontrado: ${audioPath}`);
-                        return res.status(404).json({ error: 'Áudio não encontrado', audioId, path: audioPath });
-                    }
-                    
-                    // Verifica se é arquivo válido
-                    const stats = fs.statSync(audioPath);
-                    if (stats.size === 0) {
-                        console.error(`❌ Áudio vazio: ${audioPath}`);
-                        return res.status(404).json({ error: 'Áudio vazio' });
-                    }
-                    
-                    res.setHeader('Content-Type', 'audio/ogg; codecs=opus');
-                    res.setHeader('Content-Length', stats.size);
-                    res.setHeader('Cache-Control', 'public, max-age=3600');
-                    res.sendFile(audioPath);
-                } catch (e) {
-                    console.error('❌ Erro ao baixar áudio:', e);
-                    res.status(500).json({ error: e.message || 'Erro ao baixar áudio', details: e.toString() });
-                }
+                res.status(501).json({ error: 'Funcionalidade de áudio desabilitada para economizar memória' });
             });
-
-            // API: enviar áudio
+            
+            // API: enviar áudio - DESABILITADA
+            app.post('/api/chats/:id/send-audio', (req, res) => {
+                res.status(501).json({ error: 'Funcionalidade de áudio desabilitada para economizar memória' });
+            });
+            
+            /* CÓDIGO REMOVIDO - Envio de áudio (economia de memória)
             app.post('/api/chats/:id/send-audio', upload.single('audio'), async (req, res) => {
                 try {
                     const chatId = req.params.id;
@@ -729,6 +688,7 @@ class App {
 
                     try {
                         console.log('[send-audio] Iniciando conversão para Opus...');
+                        const { convertToOpus } = getVoiceModule();
                         await convertToOpus(sourcePath, convertedPath);
                         console.log('[send-audio] Conversão concluída');
                     } catch (conversionError) {
@@ -748,6 +708,7 @@ class App {
                         sendResult = await this.bot.sendAudio(chatId, convertedPath, 'audio.ogg');
                     } else {
                         console.log('[send-audio] Chamando sendPTT (whatsapp-web.js)...');
+                        const { sendPTT } = getVoiceModule();
                         await sendPTT(clientInstance, chatId, convertedPath);
                         console.log('[send-audio] sendPTT concluído');
                     }
@@ -784,8 +745,14 @@ class App {
                     res.status(500).json({ error: e.message || 'internal_error' });
                 }
             });
+            */
 
-            // API: enviar imagem
+            // API: enviar imagem - DESABILITADA
+            app.post('/api/chats/:id/send-image', (req, res) => {
+                res.status(501).json({ error: 'Funcionalidade de imagem desabilitada para economizar memória' });
+            });
+
+            /* CÓDIGO REMOVIDO - Envio de imagem (economia de memória)
             app.post('/api/chats/:id/send-image', uploadImage.single('image'), async (req, res) => {
                 try {
                     const chatId = req.params.id;
@@ -872,8 +839,14 @@ class App {
                     res.status(500).json({ error: e.message || 'internal_error' });
                 }
             });
+            */
 
-            // API: enviar arquivo
+            // API: enviar arquivo - REMOVIDA para economizar memória
+            app.post('/api/chats/:id/send-file', (req, res) => {
+                res.status(501).json({ error: 'Funcionalidade de arquivo desabilitada' });
+            });
+            
+            /* CÓDIGO REMOVIDO - Envio de arquivo
             app.post('/api/chats/:id/send-file', uploadFile.single('file'), async (req, res) => {
                 try {
                     const chatId = req.params.id;
@@ -940,6 +913,7 @@ class App {
                     res.status(500).json({ error: e.message || 'internal_error' });
                 }
             });
+            */
 
             // API: foto de perfil do chat (com cache local)
             app.get('/api/chats/:id/photo', async (req, res) => {

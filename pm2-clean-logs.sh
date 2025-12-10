@@ -29,3 +29,4 @@ echo ""
 echo "📊 Status dos logs:"
 pm2 list
 
+
