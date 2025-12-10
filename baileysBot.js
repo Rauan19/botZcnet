@@ -23,6 +23,7 @@ class BaileysBot {
         this.started = false;
         this.initialized = false; // Indica se o bot foi inicializado (mesmo que tenha erro depois)
         this.qrString = null;
+        this.qrGeneratedTime = 0; // Timestamp de quando QR foi gerado (para detectar QR recente)
         this.authState = null; // Estado de autenticação para verificar credenciais
         // Logger COMPLETAMENTE silencioso - desativa TODOS os logs do Baileys
         // Isso é crítico para evitar logs enormes de criptografia que enchem o heap
@@ -702,6 +703,7 @@ class BaileysBot {
         if (qr) {
             console.log(`🔍 [DEBUG] QR recebido! Tamanho: ${qr.length} caracteres`);
             this.qrString = qr;
+            this.qrGeneratedTime = Date.now(); // Salva timestamp para detectar QR recente
             console.log('');
             console.log('═══════════════════════════════════════════════════════');
             console.log('📱 QR CODE GERADO - ESCANEIE COM SEU WHATSAPP');
@@ -736,6 +738,7 @@ class BaileysBot {
             console.log('🤝 BAILEYS CONECTADO COM SUCESSO!');
             console.log('═══════════════════════════════════════════════════════');
             this.qrString = null; // Limpa QR quando conecta
+            this.qrGeneratedTime = 0; // Limpa timestamp quando conecta
             
             // Reseta contadores quando conecta com sucesso
             this.reconnectAttempts = 0;
@@ -778,48 +781,75 @@ class BaileysBot {
             this.started = false;
             this.lastConnectionError = statusCode; // Salva último erro para debug
 
-            // VERIFICA CÓDIGO 428 PRIMEIRO - Connection Terminated by Server (múltiplas instâncias)
+            // VERIFICA CÓDIGO 428 - Connection Terminated by Server
+            // MELHORADO: Só para se realmente houver múltiplas instâncias E não acabou de gerar QR
             const isCode428 = (statusCode === 428);
             
             if (isCode428) {
+                // Se acabou de gerar QR code (menos de 30 segundos), erro 428 pode ser temporário
+                // Não deve parar completamente - tenta reconectar
+                const timeSinceQr = this.qrString ? Date.now() - (this.qrGeneratedTime || 0) : Infinity;
+                const justGeneratedQr = timeSinceQr < 30000; // 30 segundos
+                
+                if (justGeneratedQr) {
+                    console.log(`⚠️ Código 428 detectado logo após gerar QR code`);
+                    console.log(`💡 Isso pode ser temporário. Tentando reconectar em 10 segundos...`);
+                    
+                    // Tenta reconectar após 10 segundos
+                    setTimeout(() => {
+                        if (!this.started && !this.pauseRequested) {
+                            console.log('🔄 Tentando reconectar após erro 428 temporário...');
+                            this.start().catch(err => {
+                                console.error('❌ Erro ao reconectar:', err.message);
+                                // Se falhar novamente, tenta mais uma vez após 30 segundos
+                                setTimeout(() => {
+                                    if (!this.started && !this.pauseRequested) {
+                                        console.log('🔄 Segunda tentativa de reconexão após erro 428...');
+                                        this.start().catch(e => console.error('❌ Falha na segunda tentativa:', e.message));
+                                    }
+                                }, 30000);
+                            });
+                        }
+                    }, 10000);
+                    
+                    return;
+                }
+                
+                // Se não acabou de gerar QR, pode ser múltiplas instâncias
                 console.log(`⚠️ Código 428 detectado: CONEXÃO TERMINADA PELO SERVIDOR`);
-                console.log(`💡 Isso geralmente significa:`);
-                console.log(`   - Múltiplas instâncias estão usando a mesma sessão`);
-                console.log(`   - Outro bot está conectado com o mesmo número`);
-                console.log(`   - Sessão está sendo usada em outro lugar`);
+                console.log(`💡 Possíveis causas:`);
+                console.log(`   - Múltiplas instâncias usando a mesma sessão`);
+                console.log(`   - Outro bot conectado com o mesmo número`);
+                console.log(`   - Sessão sendo usada em outro lugar`);
+                console.log(`   - Problema temporário do WhatsApp`);
                 console.log(`\n📁 Diretório de autenticação atual: ${this.authDir}`);
-                console.log(`💡 SOLUÇÃO:`);
-                console.log(`   1. Pare TODOS os bots (Ctrl+C em todos os terminais)`);
+                console.log(`\n🔄 Tentando reconectar automaticamente em 30 segundos...`);
+                console.log(`💡 Se o problema persistir:`);
+                console.log(`   1. Verifique se há outros bots rodando`);
                 console.log(`   2. Certifique-se de que cada bot usa um diretório diferente`);
                 console.log(`   3. Use: npm run start:bot1, npm run start:bot2, npm run start:bot3`);
-                console.log(`   4. Ou configure PORT diferente: PORT=3009 npm run start:baileys`);
-                console.log(`\n⛔ PARANDO RECONEXÃO AUTOMÁTICA para evitar loops!`);
-                console.log(`   Reinicie manualmente após resolver o conflito.`);
                 
-                // Cancela restart anterior se existir
-                if (this.restartTimeout) {
-                    clearTimeout(this.restartTimeout);
-                    this.restartTimeout = null;
-                }
-                
-                // Fecha socket anterior se existir
-                try {
-                    if (this.sock) {
-                        this.sock.end();
-                        this.sock = null;
+                // MELHORADO: Tenta reconectar automaticamente mesmo com erro 428
+                // Só para se realmente houver múltiplas tentativas falhando
+                setTimeout(() => {
+                    if (!this.started && !this.pauseRequested) {
+                        console.log('🔄 Tentando reconectar após erro 428...');
+                        this.start().catch(err => {
+                            console.error('❌ Erro ao reconectar após 428:', err.message);
+                            // Se falhar novamente, tenta mais uma vez
+                            setTimeout(() => {
+                                if (!this.started && !this.pauseRequested) {
+                                    console.log('🔄 Segunda tentativa após erro 428...');
+                                    this.start().catch(e => {
+                                        console.error('❌ Falha na segunda tentativa. Verifique se há múltiplas instâncias.');
+                                        // Só para completamente após 2 tentativas falharem
+                                        this.pauseRequested = true;
+                                    });
+                                }
+                            }, 60000);
+                        });
                     }
-                } catch (e) {
-                    // Ignora erros ao fechar socket
-                }
-                
-                // Para keepalive
-                if (this.keepAliveInterval) {
-                    clearInterval(this.keepAliveInterval);
-                    this.keepAliveInterval = null;
-                }
-                
-                // NÃO tenta reconectar automaticamente quando há conflito de sessão
-                this.pauseRequested = true;
+                }, 30000);
                 
                 return;
             }
