@@ -201,6 +201,14 @@ class BaileysBot {
         this.lastResponseTime = new Map(); // rate limiting por chat
         this.processedMessages = new Map(); // evita processar mensagens duplicadas
         
+        // SISTEMA DE HEALTH CHECK - Detecta quando bot recebe mensagens mas não responde
+        this.lastReceivedMessageTime = 0; // Timestamp da última mensagem recebida
+        this.lastSentMessageTime = 0; // Timestamp da última mensagem enviada com sucesso
+        this.healthCheckInterval = null; // Interval do health check
+        this.failedSendAttempts = 0; // Contador de tentativas de envio falhadas
+        this.maxFailedSendAttempts = 3; // Máximo de tentativas falhadas antes de forçar reconexão
+        this.lastHealthCheckLog = 0; // Timestamp do último log de status do health check
+        
         // SISTEMA DE AUTO-RECUPERAÇÃO - GARANTE QUE O BOT NUNCA PARE COMPLETAMENTE
         this.autoRecoveryEnabled = true; // Sempre ativo
         this.watchdogInterval = null; // Interval do watchdog
@@ -474,6 +482,9 @@ class BaileysBot {
         
         // INICIA VALIDAÇÃO PERIÓDICA DA SESSÃO (a cada 2 minutos)
         this.startSessionValidation();
+        
+        // INICIA HEALTH CHECK - Detecta quando bot recebe mensagens mas não responde
+        this.startHealthCheck();
 
         this.sock.ev.on('messages.upsert', (payload) => {
             this.handleMessagesUpsert(payload).catch(err => {
@@ -661,6 +672,155 @@ class BaileysBot {
     }
     
     /**
+     * HEALTH CHECK - Detecta quando bot para de receber/enviar mensagens (socket "zombie")
+     * Detecta dois cenários:
+     * 1. Bot recebe mensagens mas não consegue enviar (socket parcialmente funcional)
+     * 2. Bot para completamente de receber/enviar (socket totalmente "zombie")
+     */
+    startHealthCheck() {
+        // Limpa health check anterior se existir
+        if (this.healthCheckInterval) {
+            clearInterval(this.healthCheckInterval);
+        }
+        
+        this.healthCheckInterval = setInterval(() => {
+            try {
+                const now = Date.now();
+                
+                // Verifica se bot está "conectado" mas não está funcionando
+                const isConnected = this.sock && 
+                                   this.sock.ws && 
+                                   this.sock.ws.readyState === 1 &&
+                                   this.sock.user && 
+                                   this.sock.user.id &&
+                                   this.started;
+                
+                if (!isConnected) {
+                    // Não está conectado - watchdog vai cuidar disso
+                    return;
+                }
+                
+                // Log periódico de status (a cada 10 minutos) para debug
+                const timeSinceLastCheck = now - (this.lastHealthCheckLog || 0);
+                if (timeSinceLastCheck > 10 * 60 * 1000) {
+                    const timeSinceReceived = now - (this.lastReceivedMessageTime || 0);
+                    const timeSinceSent = now - (this.lastSentMessageTime || 0);
+                    console.log(`💚 [HEALTH CHECK] Status OK - Recebidas: ${Math.round(timeSinceReceived / 1000)}s | Enviadas: ${Math.round(timeSinceSent / 1000)}s | Falhas: ${this.failedSendAttempts}`);
+                    this.lastHealthCheckLog = now;
+                }
+                
+                const timeSinceLastReceived = now - (this.lastReceivedMessageTime || 0);
+                const timeSinceLastSent = now - (this.lastSentMessageTime || 0);
+                const hasRecentMessages = timeSinceLastReceived < 5 * 60 * 1000; // 5 minutos
+                const noRecentSends = timeSinceLastSent > 5 * 60 * 1000; // Mais de 5 minutos sem enviar
+                const hasFailedAttempts = this.failedSendAttempts >= this.maxFailedSendAttempts;
+                
+                // CENÁRIO 1: Bot recebe mensagens mas não consegue enviar
+                const scenario1 = hasRecentMessages && (noRecentSends || hasFailedAttempts);
+                
+                // CENÁRIO 2: Bot para completamente de receber/enviar (socket totalmente "zombie")
+                // Se não recebeu mensagens há mais de 15 minutos E não enviou há mais de 15 minutos
+                // E está "conectado", provavelmente está zombie
+                const noRecentReceives = timeSinceLastReceived > 15 * 60 * 1000; // Mais de 15 minutos sem receber
+                const scenario2 = noRecentReceives && noRecentSends && isConnected;
+                
+                // Se detectou algum problema
+                if (scenario1 || scenario2) {
+                    // Não força reconexão se bot está explicitamente pausado
+                    if (this.pauseRequested) {
+                        return; // Bot está pausado intencionalmente
+                    }
+                    
+                    console.log('');
+                    console.log('═══════════════════════════════════════════════════════');
+                    console.log('⚠️⚠️⚠️ [HEALTH CHECK] PROBLEMA DETECTADO: Socket "zombie" ⚠️⚠️⚠️');
+                    console.log('═══════════════════════════════════════════════════════');
+                    console.log(`   📥 Última mensagem recebida: ${Math.round(timeSinceLastReceived / 1000)}s atrás`);
+                    console.log(`   📤 Última mensagem enviada: ${Math.round(timeSinceLastSent / 1000)}s atrás`);
+                    console.log(`   ❌ Tentativas de envio falhadas: ${this.failedSendAttempts}`);
+                    console.log('');
+                    console.log('   🔍 DIAGNÓSTICO:');
+                    
+                    if (scenario1) {
+                        console.log('   - Bot está recebendo mensagens ✅');
+                        console.log('   - Bot NÃO consegue enviar respostas ❌');
+                        console.log('   - Socket está parcialmente "zombie"');
+                    } else if (scenario2) {
+                        console.log('   - Bot PAROU de receber mensagens ❌');
+                        console.log('   - Bot NÃO consegue enviar respostas ❌');
+                        console.log('   - Socket está totalmente "zombie" (conectado mas morto)');
+                    }
+                    
+                    console.log('   - Isso geralmente indica que a sessão expirou');
+                    console.log('   - Socket aparece como "conectado" mas não funciona');
+                    console.log('');
+                    console.log('🔄 SOLUÇÃO: Forçando reconexão automática em 5 segundos...');
+                    console.log('   (Você NÃO precisa reiniciar manualmente - o bot vai se recuperar sozinho)');
+                    console.log('═══════════════════════════════════════════════════════');
+                    console.log('');
+                    
+                    // Força reconexão
+                    this.started = false;
+                    this.pauseRequested = false;
+                    this.failedSendAttempts = 0;
+                    this.lastReceivedMessageTime = 0;
+                    this.lastSentMessageTime = 0;
+                    
+                    // Limpa timeouts anteriores
+                    if (this.forceReconnectTimeout) {
+                        clearTimeout(this.forceReconnectTimeout);
+                    }
+                    
+                    // Força reconexão após 5 segundos
+                    this.forceReconnectTimeout = setTimeout(() => {
+                        if (!this.started && !this.isRestarting && !this.pauseRequested) {
+                            console.log('');
+                            console.log('═══════════════════════════════════════════════════════');
+                            console.log('🔄 [HEALTH CHECK] Iniciando reconexão automática...');
+                            console.log('═══════════════════════════════════════════════════════');
+                            this.start().then(() => {
+                                console.log('');
+                                console.log('✅ [HEALTH CHECK] Reconexão bem-sucedida! Bot está funcionando novamente.');
+                                console.log('');
+                            }).catch(err => {
+                                console.error('');
+                                console.error('❌ [HEALTH CHECK] Erro ao reconectar:', err.message);
+                                console.error('🔄 Tentando novamente em 2 minutos...');
+                                console.error('');
+                                // Tenta novamente em 2 minutos se falhar
+                                setTimeout(() => {
+                                    if (!this.started && !this.isRestarting && !this.pauseRequested) {
+                                        console.log('🔄 [HEALTH CHECK] Segunda tentativa de reconexão...');
+                                        this.start().then(() => {
+                                            console.log('✅ [HEALTH CHECK] Reconexão bem-sucedida na segunda tentativa!');
+                                        }).catch(e => {
+                                            console.error('❌ [HEALTH CHECK] Falha na segunda tentativa:', e.message);
+                                            console.error('🔄 Continuando tentativas automáticas...');
+                                        });
+                                    }
+                                }, 120000);
+                            });
+                        }
+                    }, 5000);
+                }
+            } catch (e) {
+                // Ignora erros para não quebrar o sistema
+                console.error('⚠️ Erro no health check (ignorado):', e.message);
+            }
+        }, 60000); // Verifica a cada 1 minuto
+    }
+    
+    /**
+     * Para o health check (apenas se realmente necessário)
+     */
+    stopHealthCheck() {
+        if (this.healthCheckInterval) {
+            clearInterval(this.healthCheckInterval);
+            this.healthCheckInterval = null;
+        }
+    }
+    
+    /**
      * BACKUP DE CREDENCIAIS - Cria backup antes de limpar ou quando necessário
      */
     backupCredentials() {
@@ -805,6 +965,11 @@ class BaileysBot {
             this.isRestarting = false; // Reseta flag de restart quando conecta
             this.lastConnectionError = null; // Limpa erro quando conecta
             this.pauseRequested = false; // Reseta pause quando conecta com sucesso
+            
+            // Reseta contadores do health check quando reconecta
+            this.lastReceivedMessageTime = Date.now(); // Marca como se tivesse recebido agora (evita falso positivo)
+            this.lastSentMessageTime = Date.now(); // Marca como se tivesse enviado agora (evita falso positivo)
+            this.failedSendAttempts = 0; // Reseta contador de falhas
             if (this.restartTimeout) {
                 clearTimeout(this.restartTimeout);
                 this.restartTimeout = null;
@@ -1552,6 +1717,9 @@ class BaileysBot {
 
                 const normalized = this.normalizeText(body);
                 const context = this.getConversationContext(chatId);
+                
+                // Atualiza timestamp da última mensagem recebida (para health check)
+                this.lastReceivedMessageTime = Date.now();
 
                 // Log detalhado para debug
                 console.log(`📩 [${chatId}] Mensagem: "${body.substring(0, 50)}" | Normalizada: "${normalized}" | Contexto: ${context.currentMenu}/${context.currentStep || 'null'}`);
@@ -2141,13 +2309,26 @@ Digite o *número* da opção ou *8* para voltar ao menu.`;
             const result = await sock.sendMessage(jid, { text });
             this.recordOutgoingMessage(jid, text);
             this.recordResponse(chatId);
+            // Atualiza timestamp da última mensagem enviada com sucesso (para health check)
+            this.lastSentMessageTime = Date.now();
+            this.failedSendAttempts = 0; // Reseta contador de falhas
             return result;
         } catch (err) {
+            // Incrementa contador de tentativas falhadas
+            this.failedSendAttempts++;
+            
             // Se erro ao enviar, não quebra o fluxo
             // Apenas loga se for erro crítico
             if (!err.message?.includes('not connected') && !err.message?.includes('readyState')) {
                 this.log.error('Erro ao enviar mensagem:', err.message);
             }
+            
+            // Se muitas tentativas falharam, pode ser que o socket esteja "zombie"
+            if (this.failedSendAttempts >= this.maxFailedSendAttempts) {
+                console.log(`⚠️ [HEALTH CHECK] ${this.failedSendAttempts} tentativas de envio falharam. Socket pode estar desconectado.`);
+                // Força verificação de conexão no próximo health check
+            }
+            
             return null;
         }
     }
@@ -3355,6 +3536,9 @@ Digite o *número* da opção ou *8* para voltar ao menu.`;
                 clearInterval(this.keepAliveInterval);
                 this.keepAliveInterval = null;
             }
+            
+            // Para health check se estiver rodando
+            this.stopHealthCheck();
             
             if (this.sock?.ev) {
                 this.sock.ev.removeAllListeners('connection.update');
