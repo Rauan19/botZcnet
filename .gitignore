@@ -10,9 +10,9 @@ auth_info_baileys/
 tokens/
 tokens-*/
 tokens-baileys*/
-tokens-bot*/
+tokens-bot1/
 auth-backups/
-
+tokens-bot2/
 # Arquivos temporários
 temp/
 temp_audio/
