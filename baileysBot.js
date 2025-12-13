@@ -392,30 +392,16 @@ class BaileysBot {
         const hasCredentials = state.creds && state.creds.me;
         // Estado de autenticação verificado
         
-        // MELHORADO: Se não há credenciais, tenta restaurar do backup
+        // NÃO restaura do backup automaticamente - usa apenas tokens atuais
+        // Se não há credenciais, gera novo QR code (não tenta restaurar backup)
         if (!hasCredentials) {
-            // Tentando restaurar credenciais do backup
-            const restored = this.restoreCredentialsFromBackup();
-            if (restored) {
-                // Recarrega estado após restaurar
-                const { state: restoredState, saveCreds: restoredSaveCreds } = await useMultiFileAuthState(this.authDir);
-                this.saveCreds = restoredSaveCreds;
-                this.authState = restoredState;
-                const hasRestoredCreds = restoredState.creds && restoredState.creds.me;
-                if (hasRestoredCreds) {
-                    // Credenciais restauradas do backup
-                }
-            }
+            // Não restaura do backup - deixa gerar QR code novo
+            console.log('📱 Sem credenciais - QR code será gerado');
         } else {
             // Verifica se credenciais estão válidas
             if (!state.creds.registered || !state.creds.account) {
-                // Tenta restaurar do backup se credenciais parecem inválidas
-                const restored = this.restoreCredentialsFromBackup();
-                if (restored) {
-                    const { state: restoredState, saveCreds: restoredSaveCreds } = await useMultiFileAuthState(this.authDir);
-                    this.saveCreds = restoredSaveCreds;
-                    this.authState = restoredState;
-                }
+                // Credenciais inválidas - não restaura do backup, deixa gerar QR novo
+                console.log('📱 Credenciais inválidas - QR code será gerado');
             }
         }
 
@@ -1426,14 +1412,77 @@ class BaileysBot {
                 // Se não há credenciais válidas, limpa tokens automaticamente na primeira tentativa
                 const hasValidCredentials = this.sock?.user || (this.authState?.creds?.me && this.authState?.creds?.registered);
                 if (!hasValidCredentials) {
-                    console.log(`\n🧹 Sem credenciais válidas detectadas. Limpando tokens para forçar novo QR...`);
+                    this.error405Count++;
+                    this.lastError405Time = Date.now();
+                    
+                    // Se já tentou 2 vezes, aguarda mais tempo antes de tentar de novo
+                    if (this.error405Count >= 2) {
+                        console.log(`\n⏸️ Múltiplos erros 405 detectados (${this.error405Count}). Aguardando 5 minutos antes de limpar tokens...`);
+                        this.pauseRequested = true;
+                        
+                        setTimeout(async () => {
+                            console.log(`\n🧹 Limpando tokens e backups para forçar novo QR...`);
+                            try {
+                                // Remove backups também para não restaurar credenciais inválidas
+                                if (fs.existsSync(this.credBackupDir)) {
+                                    fs.rmSync(this.credBackupDir, { recursive: true, force: true });
+                                    console.log('🗑️ Backups removidos para evitar loop');
+                                }
+                                
+                                await this.cleanupAuthDir();
+                                this.authState = null;
+                                this.error405Count = 0;
+                                this.reconnectAttempts = 0;
+                                this.pauseRequested = false;
+                                
+                                console.log(`✅ Tokens e backups limpos. Tentando gerar QR code em 30 segundos...`);
+                                
+                                // Fecha socket
+                                try {
+                                    if (this.sock) {
+                                        this.sock.end();
+                                        this.sock = null;
+                                    }
+                                } catch (e) {}
+                                
+                                // Para keepalive
+                                if (this.keepAliveInterval) {
+                                    clearInterval(this.keepAliveInterval);
+                                    this.keepAliveInterval = null;
+                                }
+                                
+                                // Aguarda 30 segundos e tenta gerar QR code
+                                setTimeout(() => {
+                                    this.started = false;
+                                    console.log('🔄 Tentando gerar QR code após limpeza completa...');
+                                    this.start().catch(err => {
+                                        console.error('❌ Erro ao gerar QR code:', err.message);
+                                    });
+                                }, 30000);
+                                
+                                return;
+                            } catch (e) {
+                                console.log(`⚠️ Erro ao limpar tokens:`, e.message);
+                            }
+                        }, 5 * 60 * 1000); // 5 minutos
+                        
+                        return;
+                    }
+                    
+                    console.log(`\n🧹 Sem credenciais válidas. Limpando tokens e DELETANDO backups...`);
                     try {
+                        // Remove backups também para NÃO restaurar credenciais inválidas
+                        if (fs.existsSync(this.credBackupDir)) {
+                            fs.rmSync(this.credBackupDir, { recursive: true, force: true });
+                            console.log('🗑️ Backups DELETADOS (não vai restaurar)');
+                        }
+                        
                         await this.cleanupAuthDir();
-                        this.authState = null; // Limpa referência
-                        this.error405Count = 0; // Reseta contador
+                        this.authState = null;
+                        this.error405Count = 0;
                         this.reconnectAttempts = 0;
                         this.pauseRequested = false;
-                        console.log(`✅ Tokens limpos. Tentando gerar QR code em 10 segundos...`);
+                        console.log(`✅ Tokens e backups limpos. Tentando gerar QR code em 30 segundos...`);
                         
                         // Fecha socket atual
                         try {
@@ -1449,16 +1498,16 @@ class BaileysBot {
                             this.keepAliveInterval = null;
                         }
                         
-                        // Aguarda 10 segundos e tenta gerar QR code
+                        // Aguarda 30 segundos e tenta gerar QR code
                         setTimeout(() => {
-                            this.started = false; // Permite novo start
+                            this.started = false;
                             console.log('🔄 Tentando gerar QR code após limpeza de tokens...');
                             this.start().catch(err => {
                                 console.error('❌ Erro ao gerar QR code:', err.message);
                             });
-                        }, 10000);
+                        }, 30000); // 30 segundos
                         
-                        return; // SAI AQUI - não aguarda 2 horas
+                        return;
                     } catch (e) {
                         console.log(`⚠️ Erro ao limpar tokens:`, e.message);
                     }
