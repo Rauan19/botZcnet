@@ -1511,58 +1511,6 @@ class BaileysBot {
                 
                 return;
                 
-                // Se não passou de 3 tentativas, apenas aguarda mais tempo (não limpa tokens)
-                console.log(`\n⏸️ Aguardando ${Math.min(this.error405Count * 10, 60)} minutos antes de tentar novamente...`);
-                console.log(`💡 WhatsApp bloqueou temporariamente (rate limiting)`);
-                console.log(`💡 NÃO limpa tokens ainda - aguardando cooldown`);
-                
-                this.pauseRequested = true;
-                
-                // Aguarda tempo proporcional ao número de tentativas
-                const waitTime = Math.min(this.error405Count * 10 * 60 * 1000, 60 * 60 * 1000); // Máximo 1 hora
-                
-                setTimeout(() => {
-                    this.pauseRequested = false;
-                    if (!this.started) {
-                        console.log(`🔄 Tentando reconectar após cooldown de ${Math.floor(waitTime / 60000)} minutos...`);
-                        this.start().catch(err => {
-                            console.error('❌ Erro ao reconectar:', err.message);
-                        });
-                    }
-                }, waitTime);
-                
-                // Fecha socket temporariamente
-                try {
-                    if (this.sock) {
-                        this.sock.end();
-                        this.sock = null;
-                    }
-                } catch (e) {}
-                
-                // Para keepalive temporariamente
-                if (this.keepAliveInterval) {
-                    clearInterval(this.keepAliveInterval);
-                    this.keepAliveInterval = null;
-                }
-                
-                return;
-                
-                console.log(`\n${'='.repeat(60)}`);
-                console.log(`⏸️ Erro 405 detectado - Aguardando 2 horas antes de tentar novamente`);
-                console.log(`${'='.repeat(60)}`);
-                console.log(`\n💡 O watchdog vai reconectar automaticamente após 2 horas`);
-                console.log(`💡 Isso evita bloqueio permanente do WhatsApp`);
-                console.log(`\n⚠️ IMPORTANTE:`);
-                console.log(`   - QR code NÃO será gerado enquanto houver erro 405!`);
-                console.log(`   - O bot precisa conseguir conectar aos servidores primeiro`);
-                console.log(`   - Aguardando 2 horas para evitar bloqueio`);
-                console.log(`\n${'='.repeat(60)}\n`);
-                
-                // MELHORADO: Não para completamente - apenas aguarda mais tempo
-                // O watchdog vai detectar e reconectar automaticamente após 2 horas
-                this.pauseRequested = false; // Permite que watchdog reconecte
-                this.isRestarting = false;
-                
                 // Cancela qualquer restart pendente
                 if (this.restartTimeout) {
                     clearTimeout(this.restartTimeout);
