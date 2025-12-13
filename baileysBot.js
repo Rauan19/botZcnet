@@ -1399,6 +1399,19 @@ class BaileysBot {
             const isCode405 = (statusCode === 405);
             
             if (isCode405) {
+                // Verifica credenciais ANTES de processar erro 405
+                const hasValidCredentials = this.sock?.user || (this.authState?.creds?.me && this.authState?.creds?.registered);
+                
+                // Se NÃO tem credenciais, IGNORA erro 405 completamente e deixa gerar QR code
+                if (!hasValidCredentials) {
+                    console.log(`\n⚠️ Erro 405 detectado, mas SEM credenciais válidas`);
+                    console.log(`💡 IGNORANDO erro 405 - continuando para gerar QR code normalmente...`);
+                    // NÃO retorna - deixa o código continuar normalmente para gerar QR code
+                    // O erro 405 será ignorado e o QR code será gerado
+                    return; // Sai do handleConnectionUpdate mas não impede geração de QR
+                }
+                
+                // Se TEM credenciais, processa erro 405 normalmente
                 console.log(`\n${'='.repeat(60)}`);
                 console.log(`⚠️ ERRO 405 DETECTADO: CONNECTION FAILURE`);
                 console.log(`${'='.repeat(60)}`);
@@ -1409,14 +1422,52 @@ class BaileysBot {
                 console.log(`   - Versão do Baileys pode estar desatualizada`);
                 console.log(`   - Credenciais antigas/inválidas podem estar causando o problema`);
                 
-                // Se não há credenciais válidas, limpa tokens automaticamente na primeira tentativa
-                const hasValidCredentials = this.sock?.user || (this.authState?.creds?.me && this.authState?.creds?.registered);
                 // Erro 405 = Rate limiting do WhatsApp (NÃO limpa tokens imediatamente!)
                 this.error405Count++;
                 this.lastError405Time = Date.now();
                 
-                // Se não tem credenciais, limpa tokens e tenta gerar QR code IMEDIATAMENTE
+                // Se não tem credenciais (não deveria chegar aqui, mas por segurança)
                 if (!hasValidCredentials) {
+                    const timeSinceLastCleanup = this.lastCleanupTime ? Date.now() - this.lastCleanupTime : Infinity;
+                    const minTimeBetweenCleanups = 10 * 60 * 1000; // 10 minutos
+                    
+                    // Se já limpou tokens há menos de 10 minutos, apenas aguarda
+                    if (timeSinceLastCleanup < minTimeBetweenCleanups) {
+                        const waitMinutes = Math.ceil((minTimeBetweenCleanups - timeSinceLastCleanup) / 60000);
+                        console.log(`\n⏸️ Tokens foram limpos há ${Math.floor(timeSinceLastCleanup / 60000)} minutos`);
+                        console.log(`💡 Aguardando ${waitMinutes} minutos antes de tentar gerar QR code novamente...`);
+                        console.log(`💡 WhatsApp bloqueou (erro 405) - precisa aguardar mais tempo`);
+                        
+                        this.pauseRequested = true;
+                        
+                        setTimeout(() => {
+                            this.pauseRequested = false;
+                            if (!this.started) {
+                                console.log('🔄 Tentando gerar QR code após aguardar...');
+                                this.start().catch(err => {
+                                    console.error('❌ Erro ao gerar QR code:', err.message);
+                                });
+                            }
+                        }, minTimeBetweenCleanups - timeSinceLastCleanup);
+                        
+                        // Fecha socket temporariamente
+                        try {
+                            if (this.sock) {
+                                this.sock.end();
+                                this.sock = null;
+                            }
+                        } catch (e) {}
+                        
+                        // Para keepalive
+                        if (this.keepAliveInterval) {
+                            clearInterval(this.keepAliveInterval);
+                            this.keepAliveInterval = null;
+                        }
+                        
+                        return;
+                    }
+                    
+                    // Limpa tokens apenas se passou tempo suficiente
                     console.log(`\n🧹 Sem credenciais válidas. Limpando tokens e backups para gerar QR code...`);
                     try {
                         // Remove backups
@@ -1430,9 +1481,10 @@ class BaileysBot {
                         this.error405Count = 0; // Reseta contador
                         this.reconnectAttempts = 0;
                         this.pauseRequested = false;
+                        this.lastCleanupTime = Date.now(); // Marca quando limpou
                         
-                        console.log(`✅ Tokens limpos. Tentando gerar QR code em 30 segundos...`);
-                        console.log(`💡 Ignorando erro 405 - tentando gerar QR code mesmo assim`);
+                        console.log(`✅ Tokens limpos. Aguardando 5 MINUTOS antes de tentar gerar QR code...`);
+                        console.log(`💡 WhatsApp bloqueou - aguardando para evitar rate limiting`);
                         
                         // Fecha socket
                         try {
@@ -1448,22 +1500,14 @@ class BaileysBot {
                             this.keepAliveInterval = null;
                         }
                         
-                        // Aguarda 30 segundos e tenta gerar QR code (ignora erro 405)
+                        // Aguarda 5 MINUTOS antes de tentar gerar QR code
                         setTimeout(() => {
                             this.started = false;
-                            console.log('🔄 Tentando gerar QR code após limpeza de tokens...');
+                            console.log('🔄 Tentando gerar QR code após aguardar 5 minutos...');
                             this.start().catch(err => {
                                 console.error('❌ Erro ao gerar QR code:', err.message);
-                                // Se ainda der erro 405, aguarda 5 minutos e tenta de novo
-                                if (err.message?.includes('405') || statusCode === 405) {
-                                    console.log('⏸️ Ainda com erro 405. Aguardando 5 minutos e tentando novamente...');
-                                    setTimeout(() => {
-                                        this.started = false;
-                                        this.start().catch(e => console.error('❌ Erro:', e.message));
-                                    }, 5 * 60 * 1000);
-                                }
                             });
-                        }, 30000); // 30 segundos
+                        }, 5 * 60 * 1000); // 5 MINUTOS
                         
                         return;
                     } catch (e) {
