@@ -223,3 +223,4 @@ npm run start:bot2
 Pronto! Agora seus bots estão rodando via PM2 com todas as melhorias! 🎉
 
 
+

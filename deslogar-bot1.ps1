@@ -19,3 +19,4 @@ Write-Host "   pm2 start bot1" -ForegroundColor White
 Write-Host ""
 Write-Host "📱 Após reiniciar, escaneie o novo QR code que aparecerá" -ForegroundColor Cyan
 
+

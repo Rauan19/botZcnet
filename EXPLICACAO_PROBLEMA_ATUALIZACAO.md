@@ -101,3 +101,4 @@ if (process.env.BAILEYS_AUTO_UPDATE === 'true') {
 
 **Agora:** Você **controla quando trocar de marcha**, testando primeiro antes de usar em produção.
 
+

@@ -85,3 +85,4 @@ echo "  - Heap aumentado para 4GB (--max-old-space-size=4096)"
 echo ""
 
 
+

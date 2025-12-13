@@ -20,3 +20,4 @@ echo "   pm2 start bot1"
 echo ""
 echo "📱 Após reiniciar, escaneie o novo QR code que aparecerá"
 
+

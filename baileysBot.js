@@ -193,6 +193,9 @@ class BaileysBot {
         this.lastConnectTime = 0; // Timestamp da última conexão bem-sucedida
         this.disconnectCount = 0; // Contador de desconexões consecutivas
         this.keepAliveInterval = null; // Interval do keepalive
+        this.websocketHealthCheckInterval = null; // Interval para verificar saúde do WebSocket
+        this.lastWebSocketResponse = Date.now(); // Timestamp da última resposta do WebSocket
+        this.websocketZombieTimeout = 2 * 60 * 1000; // 2 minutos sem resposta = modo zumbi
         this.isRestarting = false; // Flag para evitar múltiplas tentativas de restart simultâneas
         this.restartTimeout = null; // Timeout do restart para poder cancelar
         this.lastConnectionError = null; // Último erro de conexão para debug
@@ -323,6 +326,14 @@ class BaileysBot {
 
         if (!fs.existsSync(this.authDir)) {
             fs.mkdirSync(this.authDir, { recursive: true });
+            // Se diretório não existia, tenta restaurar do backup ANTES de continuar
+            const restored = this.restoreCredentialsFromBackup();
+            if (restored) {
+                console.log('✅ Tokens restaurados do backup após detecção de diretório ausente');
+            }
+        } else {
+            // Se diretório existe, faz backup preventivo antes de qualquer operação
+            this.backupCredentials();
         }
 
         // Aguarda antes de iniciar para evitar rate limiting (sempre aguarda na primeira vez também)
@@ -345,7 +356,7 @@ class BaileysBot {
         // Para habilitar, defina BAILEYS_AUTO_UPDATE=true no .env
         let version;
         if (process.env.BAILEYS_AUTO_UPDATE === 'true') {
-            console.log('📦 Buscando versão mais recente do Baileys...');
+        console.log('📦 Buscando versão mais recente do Baileys...');
             try {
                 const versionInfo = await fetchLatestBaileysVersion();
                 version = versionInfo.version;
@@ -455,7 +466,7 @@ class BaileysBot {
         this.sock.ev.on('creds.update', () => {
             try {
                 // Salva credenciais imediatamente
-                saveCreds();
+            saveCreds();
                 this.lastCredSave = Date.now();
                 
                 // Cria backup periódico (a cada 5 minutos)
@@ -476,7 +487,14 @@ class BaileysBot {
         this.startSessionValidation();
 
         this.sock.ev.on('messages.upsert', (payload) => {
-            this.handleMessagesUpsert(payload).catch(err => {
+            // TIMEOUT: 30 segundos para processar mensagens (evita travamento)
+            // Se processamento demorar mais que isso, cancela e continua
+            Promise.race([
+                this.handleMessagesUpsert(payload),
+                new Promise((_, reject) => {
+                    setTimeout(() => reject(new Error('Timeout ao processar mensagens')), 30000);
+                })
+            ]).catch(err => {
                 // Trata TODOS os erros sem deixar parar o bot
                 const errorMsg = err?.message || err?.toString() || '';
                 if (errorMsg.includes('Bad MAC') || 
@@ -486,9 +504,13 @@ class BaileysBot {
                     errorMsg.includes('decryptWithSessions')) {
                     // Trata erro Bad MAC mas continua funcionando
                     this.handleBadMacError('ao processar mensagem', err);
+                } else if (errorMsg.includes('Timeout')) {
+                    // Timeout é normal se processamento demorar muito - apenas loga
+                    console.error('⏱️ Timeout ao processar mensagens (continuando normalmente)');
+                } else {
+                    // Para outros erros, apenas loga sem quebrar o bot
+                    console.error('⚠️ Erro ao processar mensagem (ignorado):', errorMsg.substring(0, 200));
                 }
-                // Erros não críticos são ignorados - bot continua funcionando
-                // NUNCA re-lança o erro para não parar o bot
             });
         });
 
@@ -549,8 +571,8 @@ class BaileysBot {
                     console.log('');
                     console.log('⚠️⚠️⚠️ WATCHDOG: Bot desconectado há mais de 5 minutos ⚠️⚠️⚠️');
                     console.log('🔄 Forçando reconexão automática...');
-                    console.log('');
-                    
+        console.log('');
+        
                     // Reseta pauseRequested para permitir reconexão
                     this.pauseRequested = false;
                     this.started = false; // Permite novo start
@@ -567,15 +589,15 @@ class BaileysBot {
                             this.start().catch(err => {
                                 console.error('❌ Watchdog: Erro ao reconectar:', err.message);
                                 // Tenta novamente em 2 minutos se falhar
-                                setTimeout(() => {
+        setTimeout(() => {
                                     if (!this.started && !this.isRestarting) {
                                         console.log('🔄 Watchdog: Segunda tentativa de reconexão...');
                                         this.start().catch(e => console.error('❌ Watchdog: Falha na segunda tentativa:', e.message));
                                     }
                                 }, 120000);
                             });
-                        }
-                    }, 5000);
+            }
+        }, 5000);
                 }
             } catch (e) {
                 // Ignora erros no watchdog para não quebrar o sistema
@@ -717,6 +739,10 @@ class BaileysBot {
             }
             
             const backups = fs.readdirSync(this.credBackupDir)
+                .filter(name => {
+                    const backupPath = path.join(this.credBackupDir, name);
+                    return fs.statSync(backupPath).isDirectory();
+                })
                 .map(name => ({
                     name,
                     path: path.join(this.credBackupDir, name),
@@ -802,6 +828,7 @@ class BaileysBot {
             this.disconnectCount = 0;
             this.lastConnectTime = Date.now();
             this.lastSuccessfulConnection = Date.now(); // ATUALIZA WATCHDOG - conexão bem-sucedida
+            this.lastWebSocketResponse = Date.now(); // Reseta timestamp de resposta do WebSocket
             this.isRestarting = false; // Reseta flag de restart quando conecta
             this.lastConnectionError = null; // Limpa erro quando conecta
             this.pauseRequested = false; // Reseta pause quando conecta com sucesso
@@ -829,7 +856,7 @@ class BaileysBot {
             
             if (!hasUser) {
                 // Realmente desconectado - processa desconexão
-                this.started = false;
+            this.started = false;
                 this.lastConnectionError = statusCode;
             } else {
                 // Ainda tem user.id - pode ser reconexão automática ou erro temporário
@@ -961,7 +988,7 @@ class BaileysBot {
                                     this.start().catch(e => {
                                         console.error('❌ Falha na segunda tentativa. Verifique se há múltiplas instâncias.');
                                         // Só para completamente após 2 tentativas falharem
-                                        this.pauseRequested = true;
+                this.pauseRequested = true;
                                     });
                                 }
                             }, 60000);
@@ -1022,10 +1049,10 @@ class BaileysBot {
                     (async () => {
                         try {
                             await this.cleanupAuthDir();
-                            this.reconnectAttempts = 0;
-                            this.disconnectCount = 0;
-                            this.lastDisconnectTime = 0;
-                            this.lastConnectTime = 0;
+                    this.reconnectAttempts = 0;
+                    this.disconnectCount = 0;
+                    this.lastDisconnectTime = 0;
+                    this.lastConnectTime = 0;
                             this.pauseRequested = false; // Permite reconexão
                             
                             console.log('✅ Tokens limpos. Aguardando 5 segundos antes de reconectar...');
@@ -1359,18 +1386,17 @@ class BaileysBot {
     }
 
     startKeepAlive() {
-        // DESABILITADO: Keepalive estava causando reconexões desnecessárias
-        // O watchdog já faz esse trabalho de forma mais confiável
-        // Mantém apenas o envio de presence update quando conectado
+        // Limpa intervalos anteriores
         if (this.keepAliveInterval) {
             clearInterval(this.keepAliveInterval);
         }
+        if (this.websocketHealthCheckInterval) {
+            clearInterval(this.websocketHealthCheckInterval);
+        }
         
-        // Apenas envia presence update periodicamente - não detecta desconexão
-        // O watchdog faz a detecção de desconexão de forma mais confiável
+        // Keepalive: Envia presence update periodicamente
         this.keepAliveInterval = setInterval(() => {
             try {
-                // Só envia presence se realmente conectado
                 const hasUser = this.sock && this.sock.user && this.sock.user.id;
                 const hasWs = this.sock && this.sock.ws && this.sock.ws.readyState === 1;
                 
@@ -1379,19 +1405,65 @@ class BaileysBot {
                     this.lastSuccessfulConnection = Date.now();
                     
                     // Envia presence update para manter conexão viva
-                    this.sock.sendPresenceUpdate('available').catch(() => {
-                        // Erro não é crítico - ignora
+                    // TIMEOUT: 5 segundos para enviar presence (evita travar se WebSocket estiver zumbi)
+                    Promise.race([
+                        this.sock.sendPresenceUpdate('available'),
+                        new Promise((_, reject) => setTimeout(() => reject(new Error('Timeout')), 5000))
+                    ]).then(() => {
+                        // Se enviou com sucesso, atualiza timestamp de resposta
+                        this.lastWebSocketResponse = Date.now();
+                    }).catch(() => {
+                        // Se falhou ou timeout, marca como possível zumbi
+                        // O health check vai detectar e reconectar
                     });
                 } else if (hasUser && this.started) {
                     // Se tem user.id mas não tem ws, ainda está conectado
-                    // Apenas atualiza timestamp - não tenta enviar presence
                     this.lastSuccessfulConnection = Date.now();
                 }
-                // Se não tem user.id, não faz nada - watchdog vai detectar e reconectar
             } catch (e) {
                 // Ignora erros
             }
-        }, 60000); // A cada 60 segundos (reduzido para evitar overhead)
+        }, 30000); // A cada 30 segundos
+        
+        // HEALTH CHECK: Detecta WebSocket em modo zumbi (conectado mas não responde)
+        this.websocketHealthCheckInterval = setInterval(() => {
+            try {
+                const hasUser = this.sock && this.sock.user && this.sock.user.id;
+                const hasWs = this.sock && this.sock.ws && this.sock.ws.readyState === 1;
+                const timeSinceLastResponse = Date.now() - this.lastWebSocketResponse;
+                
+                // Se WebSocket está "conectado" mas não responde há mais de 2 minutos = MODO ZUMBI
+                if (hasUser && hasWs && this.started && timeSinceLastResponse > this.websocketZombieTimeout) {
+                    console.error('🧟 WebSocket em MODO ZUMBI detectado! (conectado mas não responde há ' + Math.floor(timeSinceLastResponse / 1000) + 's)');
+                    console.error('🔄 Forçando reconexão para sair do modo zumbi...');
+                    
+                    // Força reconexão imediatamente
+                    this.isRestarting = true;
+                    this.pauseRequested = false;
+                    this.started = false;
+                    
+                    // Para o socket atual
+                    if (this.sock && this.sock.end) {
+                        try {
+                            this.sock.end();
+                        } catch (e) {}
+                    }
+                    
+                    // Reconecta após 2 segundos
+                    setTimeout(() => {
+                        this.start().catch(err => {
+                            console.error('❌ Falha ao reconectar após modo zumbi:', err.message);
+                        });
+                    }, 2000);
+                    
+                    return;
+                }
+                
+                // Se não tem user.id ou ws, watchdog vai cuidar
+            } catch (e) {
+                // Ignora erros
+            }
+        }, 30000); // Verifica a cada 30 segundos
     }
 
     async cleanupAuthDir() {
@@ -1568,7 +1640,11 @@ class BaileysBot {
 
                 // Trata comando de menu (8) em qualquer contexto (ANTES de shouldIgnoreMessage)
                 if (this.isMenuCommand(normalized)) {
-                    await this.sendMenu(chatId);
+                    // TIMEOUT: 10 segundos para enviar menu
+                    await Promise.race([
+                        this.sendMenu(chatId),
+                        new Promise((_, reject) => setTimeout(() => reject(new Error('Timeout ao enviar menu')), 10000))
+                    ]).catch(() => {}); // Ignora timeout - continua normalmente
                     continue;
                 }
 
@@ -1596,7 +1672,11 @@ class BaileysBot {
                 
                 // Se mensagem vazia ou começa com saudação SEM problema técnico, envia menu
                 if (!normalized || startsWithGreeting) {
-                    await this.sendMenu(chatId);
+                    // TIMEOUT: 10 segundos para enviar menu
+                    await Promise.race([
+                        this.sendMenu(chatId),
+                        new Promise((_, reject) => setTimeout(() => reject(new Error('Timeout ao enviar menu')), 10000))
+                    ]).catch(() => {}); // Ignora timeout - continua normalmente
                     continue;
                 }
 
@@ -1785,9 +1865,15 @@ Digite o *número* da opção ou *8* para voltar ao menu.`;
 
                         // Gera e envia PIX diretamente
                         try {
-                            const pix = await this.retryApiCall(async () => {
-                                return await zcBillService.generatePixQRCode(ctx.clientId, ctx.serviceId, ctx.billId);
-                            }, 2);
+                            // TIMEOUT: 20 segundos total para gerar PIX (evita travar se API estiver lenta/travada)
+                            const pix = await Promise.race([
+                                this.retryApiCall(async () => {
+                                    return await zcBillService.generatePixQRCode(ctx.clientId, ctx.serviceId, ctx.billId);
+                                }, 2, 1000, 15000), // 2 tentativas, 1s delay, 15s timeout total
+                                new Promise((_, reject) => {
+                                    setTimeout(() => reject(new Error('Timeout ao gerar PIX')), 20000);
+                                })
+                            ]);
                             const parsed = this.parsePixPayload(pix);
 
                             if (parsed.imageBase64) {
@@ -1886,9 +1972,15 @@ Digite o *número* da opção ou *8* para voltar ao menu.`;
 
                         // Gera e envia boleto
                         try {
-                            const pdfPath = await this.retryApiCall(async () => {
-                                return await zcBillService.generateBillPDF(ctx.clientId, ctx.serviceId, ctx.billId);
-                            }, 2);
+                            // TIMEOUT: 25 segundos total para gerar boleto (PDF pode demorar mais)
+                            const pdfPath = await Promise.race([
+                                this.retryApiCall(async () => {
+                                    return await zcBillService.generateBillPDF(ctx.clientId, ctx.serviceId, ctx.billId);
+                                }, 2, 1000, 20000), // 2 tentativas, 1s delay, 20s timeout total
+                                new Promise((_, reject) => {
+                                    setTimeout(() => reject(new Error('Timeout ao gerar boleto')), 25000);
+                                })
+                            ]);
                             const caption = `*📄 BOLETO DE ${ctx.clientName || 'cliente'}*\n\n⏱️ *Liberação em até 5 minutos após o pagamento*\n\n———\n📱 *Digite 8 para voltar ao menu*`;
 
                             this.setConversationContext(chatId, {
@@ -2005,9 +2097,13 @@ Digite o *número* da opção ou *8* para voltar ao menu.`;
                     continue;
                 }
 
-                // Fora dos fluxos conhecid
+                // Fora dos fluxos conhecidos - ignora
             } catch (err) {
-                console.error('❌ Erro ao processar mensagem Baileys:', err);
+                // Erro ao processar mensagem individual - não quebra o loop
+                const errorMsg = err?.message || err?.toString() || '';
+                if (!errorMsg.includes('Timeout')) {
+                    console.error('❌ Erro ao processar mensagem Baileys:', errorMsg.substring(0, 200));
+                }
             }
         }
     }
@@ -2126,6 +2222,14 @@ Digite o *número* da opção ou *8* para voltar ao menu.`;
     }
 
 
+    // Helper para adicionar timeout em promises
+    async withTimeout(promise, timeoutMs = 10000, errorMessage = 'Operação expirou') {
+        const timeoutPromise = new Promise((_, reject) => {
+            setTimeout(() => reject(new Error(errorMessage)), timeoutMs);
+        });
+        return Promise.race([promise, timeoutPromise]);
+    }
+
     async sendMessage(chatId, text) {
         const jid = this.normalizeChatId(chatId);
         const sock = await this.ensureSocket();
@@ -2138,15 +2242,25 @@ Digite o *número* da opção ou *8* para voltar ao menu.`;
         }
         
         try {
-            const result = await sock.sendMessage(jid, { text });
+            // TIMEOUT: 10 segundos para enviar mensagem (evita travamento)
+            const result = await this.withTimeout(
+                sock.sendMessage(jid, { text }),
+                10000,
+                'Timeout ao enviar mensagem'
+            );
+            // Se enviou com sucesso, atualiza timestamp de resposta do WebSocket
+            this.lastWebSocketResponse = Date.now();
             this.recordOutgoingMessage(jid, text);
             this.recordResponse(chatId);
             return result;
         } catch (err) {
             // Se erro ao enviar, não quebra o fluxo
             // Apenas loga se for erro crítico
-            if (!err.message?.includes('not connected') && !err.message?.includes('readyState')) {
-                this.log.error('Erro ao enviar mensagem:', err.message);
+            const errorMsg = err?.message || err?.toString() || '';
+            if (!errorMsg.includes('not connected') && 
+                !errorMsg.includes('readyState') && 
+                !errorMsg.includes('Timeout')) {
+                this.log.error('Erro ao enviar mensagem:', errorMsg.substring(0, 100));
             }
             return null;
         }
@@ -2158,23 +2272,42 @@ Digite o *número* da opção ou *8* para voltar ao menu.`;
 
     async sendFile(chatId, filePath, fileName, caption = '') {
         const jid = this.normalizeChatId(chatId);
-        await this.ensureSocket();
+        const sock = await this.ensureSocket();
+        if (!sock || !sock.user || !sock.user.id) {
+            return null;
+        }
         const buffer = fs.readFileSync(filePath);
         const mimetype = mime.lookup(filePath) || 'application/octet-stream';
         const finalName = fileName || path.basename(filePath);
-        const result = await this.sock.sendMessage(jid, {
-            document: buffer,
-            mimetype,
-            fileName: finalName,
-            caption
-        });
-        this.recordOutgoingMessage(jid, caption || `[arquivo: ${finalName}]`);
-        return result;
+        try {
+            // TIMEOUT: 30 segundos para enviar arquivo (arquivos podem ser grandes)
+            const result = await this.withTimeout(
+                sock.sendMessage(jid, {
+                    document: buffer,
+                    mimetype,
+                    fileName: finalName,
+                    caption
+                }),
+                30000,
+                'Timeout ao enviar arquivo'
+            );
+            this.recordOutgoingMessage(jid, caption || `[arquivo: ${finalName}]`);
+            return result;
+        } catch (err) {
+            const errorMsg = err?.message || err?.toString() || '';
+            if (!errorMsg.includes('Timeout')) {
+                this.log.error('Erro ao enviar arquivo:', errorMsg.substring(0, 100));
+            }
+            return null;
+        }
     }
 
     async sendImageFromBase64(chatId, base64Image, filename, caption = '') {
         const jid = this.normalizeChatId(chatId);
-        await this.ensureSocket();
+        const sock = await this.ensureSocket();
+        if (!sock || !sock.user || !sock.user.id) {
+            return null;
+        }
         let data = base64Image;
         if (base64Image.includes(',')) {
             data = base64Image.split(',')[1];
@@ -2182,26 +2315,55 @@ Digite o *número* da opção ou *8* para voltar ao menu.`;
         const buffer = Buffer.from(data, 'base64');
         const mimetype = 'image/png';
         const finalName = filename || `image_${Date.now()}.png`;
-        const result = await this.sock.sendMessage(jid, {
-            image: buffer,
-            mimetype,
-            caption,
-            fileName: finalName
-        });
-        this.recordOutgoingMessage(jid, caption || '[imagem]');
-        return result;
+        try {
+            // TIMEOUT: 20 segundos para enviar imagem
+            const result = await this.withTimeout(
+                sock.sendMessage(jid, {
+                    image: buffer,
+                    mimetype,
+                    caption,
+                    fileName: finalName
+                }),
+                20000,
+                'Timeout ao enviar imagem'
+            );
+            this.recordOutgoingMessage(jid, caption || '[imagem]');
+            return result;
+        } catch (err) {
+            const errorMsg = err?.message || err?.toString() || '';
+            if (!errorMsg.includes('Timeout')) {
+                this.log.error('Erro ao enviar imagem:', errorMsg.substring(0, 100));
+            }
+            return null;
+        }
     }
 
     async sendPtt(chatId, audioPath) {
         const jid = this.normalizeChatId(chatId);
-        await this.ensureSocket();
-        const result = await this.sock.sendMessage(jid, {
-            audio: { url: audioPath },
-            mimetype: 'audio/ogg; codecs=opus',
-            ptt: true
-        });
-        this.recordOutgoingMessage(jid, '[áudio]');
-        return result;
+        const sock = await this.ensureSocket();
+        if (!sock || !sock.user || !sock.user.id) {
+            return null;
+        }
+        try {
+            // TIMEOUT: 30 segundos para enviar áudio (áudios podem ser grandes)
+            const result = await this.withTimeout(
+                sock.sendMessage(jid, {
+                    audio: { url: audioPath },
+                    mimetype: 'audio/ogg; codecs=opus',
+                    ptt: true
+                }),
+                30000,
+                'Timeout ao enviar áudio'
+            );
+            this.recordOutgoingMessage(jid, '[áudio]');
+            return result;
+        } catch (err) {
+            const errorMsg = err?.message || err?.toString() || '';
+            if (!errorMsg.includes('Timeout')) {
+                this.log.error('Erro ao enviar áudio:', errorMsg.substring(0, 100));
+            }
+            return null;
+        }
     }
 
     async sendAudio(chatId, audioPath, fileName = 'audio.ogg') {
@@ -2466,22 +2628,58 @@ Digite o número da opção ou *8* para voltar ao menu.`;
         return { payload, imageBase64 };
     }
 
-    // Função auxiliar para retry de chamadas de API
-    async retryApiCall(apiCall, maxRetries = 2, delayMs = 1000) {
+    // Função auxiliar para retry de chamadas de API COM TIMEOUT TOTAL
+    // CRÍTICO: Se API travar, cancela após timeout total para não travar o bot
+    async retryApiCall(apiCall, maxRetries = 2, delayMs = 1000, totalTimeoutMs = 15000) {
+        const startTime = Date.now();
         let lastError;
-        for (let attempt = 0; attempt <= maxRetries; attempt++) {
-            try {
-                return await apiCall();
-            } catch (error) {
-                lastError = error;
-                // Se não é o último attempt, espera antes de tentar novamente
-                if (attempt < maxRetries) {
-                    await new Promise(resolve => setTimeout(resolve, delayMs * (attempt + 1)));
-                    console.log(`🔄 Tentativa ${attempt + 2}/${maxRetries + 1} da chamada de API...`);
+        
+        // TIMEOUT TOTAL: Se todas as tentativas demorarem mais que isso, cancela
+        const timeoutPromise = new Promise((_, reject) => {
+            setTimeout(() => reject(new Error('Timeout total: API não respondeu a tempo')), totalTimeoutMs);
+        });
+        
+        const retryPromise = (async () => {
+            for (let attempt = 0; attempt <= maxRetries; attempt++) {
+                // Verifica se já passou do timeout total
+                if (Date.now() - startTime > totalTimeoutMs) {
+                    throw new Error('Timeout total: API não respondeu a tempo');
+                }
+                
+                try {
+                    // TIMEOUT POR TENTATIVA: Cada tentativa tem timeout de 10 segundos
+                    return await Promise.race([
+                        apiCall(),
+                        new Promise((_, reject) => {
+                            setTimeout(() => reject(new Error('Timeout na tentativa de API')), 10000);
+                        })
+                    ]);
+                } catch (error) {
+                    lastError = error;
+                    // Se erro é timeout, não tenta novamente (API travou)
+                    if (error.message?.includes('Timeout') || error.message?.includes('timeout')) {
+                        console.error(`⏱️ API travou (timeout) - tentativa ${attempt + 1}/${maxRetries + 1}`);
+                        if (attempt < maxRetries) {
+                            await new Promise(resolve => setTimeout(resolve, delayMs));
+                        }
+                    } else if (attempt < maxRetries) {
+                        // Para outros erros, tenta novamente
+                        await new Promise(resolve => setTimeout(resolve, delayMs));
+                        console.log(`🔄 Tentativa ${attempt + 2}/${maxRetries + 1} da chamada de API...`);
+                    }
                 }
             }
-        }
-        throw lastError;
+            throw lastError || new Error('API não respondeu após todas as tentativas');
+        })();
+        
+        // Race entre retry e timeout total
+        return Promise.race([retryPromise, timeoutPromise]).catch(err => {
+            // Se foi timeout total, loga e relança
+            if (err.message?.includes('Timeout total')) {
+                console.error('❌ API travou completamente - timeout total atingido');
+            }
+            throw err;
+        });
     }
 
     // Função auxiliar para detectar tipo de erro da API
@@ -2555,25 +2753,29 @@ Digite o número da opção ou *8* para voltar ao menu.`;
         await this.sendText(chatId, 'Processando CPF, aguarde...');
 
         try {
-            // Busca cliente com retry (tenta até 3 vezes)
-            const cli = await this.retryApiCall(async () => {
-                return await Promise.race([
-                    zcClientService.getClientByDocument(digits),
-                    new Promise((_, reject) => setTimeout(() => reject(new Error('timeout')), 15000))
-                ]);
-            }, 2); // 2 retries = 3 tentativas no total
+            // Busca cliente com retry e timeout total (evita travar se API estiver lenta/travada)
+            const cli = await Promise.race([
+                this.retryApiCall(async () => {
+                    return await zcClientService.getClientByDocument(digits);
+                }, 2, 1000, 12000), // 2 tentativas, 1s delay, 12s timeout total
+                new Promise((_, reject) => {
+                    setTimeout(() => reject(new Error('Timeout ao buscar cliente')), 15000);
+                })
+            ]);
 
             if (!cli || !cli.id) {
                 throw new Error('Nenhum cliente encontrado');
             }
 
-            // Busca serviços com retry
-            const services = await this.retryApiCall(async () => {
-                return await Promise.race([
-                    zcClientService.getClientServices(cli.id),
-                    new Promise((_, reject) => setTimeout(() => reject(new Error('timeout')), 15000))
-                ]);
-            }, 2);
+            // Busca serviços com retry e timeout total
+            const services = await Promise.race([
+                this.retryApiCall(async () => {
+                    return await zcClientService.getClientServices(cli.id);
+                }, 2, 1000, 12000), // 2 tentativas, 1s delay, 12s timeout total
+                new Promise((_, reject) => {
+                    setTimeout(() => reject(new Error('Timeout ao buscar serviços')), 15000);
+                })
+            ]);
 
             if (!services || services.length === 0) {
                 await this.sendText(chatId, 'Cliente encontrado mas sem serviços ativos.\n———\nDigite *8* para voltar ao menu.');
@@ -2581,13 +2783,15 @@ Digite o número da opção ou *8* para voltar ao menu.`;
             }
             const activeService = services.find(s => s.status === 'ativo') || services[0];
 
-            // Busca contas com retry
-            const bills = await this.retryApiCall(async () => {
-                return await Promise.race([
-                    zcBillService.getBills(cli.id, activeService.id, 'INTERNET'),
-                    new Promise((_, reject) => setTimeout(() => reject(new Error('timeout')), 15000))
-                ]);
-            }, 2);
+            // Busca contas com retry e timeout total
+            const bills = await Promise.race([
+                this.retryApiCall(async () => {
+                    return await zcBillService.getBills(cli.id, activeService.id, 'INTERNET');
+                }, 2, 1000, 12000), // 2 tentativas, 1s delay, 12s timeout total
+                new Promise((_, reject) => {
+                    setTimeout(() => reject(new Error('Timeout ao buscar cobranças')), 15000);
+                })
+            ]);
 
             if (!bills || bills.length === 0) {
                 await this.sendText(chatId, 'Nenhuma cobrança encontrada para este cliente.\n———\nDigite *8* para voltar ao menu.');
@@ -3097,11 +3301,11 @@ Digite o *número* da opção ou *8* para voltar ao menu.`;
                 
                 // Log detalhado apenas quando próximo do limite
                 if (isNearThreshold) {
-                    console.error('💡 Isso geralmente indica:');
-                    console.error('   - Sessão corrompida ou tokens inválidos após alguns dias');
-                    console.error('   - Múltiplas instâncias usando a mesma sessão');
-                    console.error('   - Conflito entre diferentes versões do código');
-                    console.error(`📁 Diretório de tokens: ${this.authDir}`);
+        console.error('💡 Isso geralmente indica:');
+        console.error('   - Sessão corrompida ou tokens inválidos após alguns dias');
+        console.error('   - Múltiplas instâncias usando a mesma sessão');
+        console.error('   - Conflito entre diferentes versões do código');
+        console.error(`📁 Diretório de tokens: ${this.authDir}`);
                 }
             }
         }
@@ -3149,16 +3353,16 @@ Digite o *número* da opção ou *8* para voltar ao menu.`;
             // Limpa a sessão e reconecta de forma assíncrona (não bloqueia)
             // Usa setImmediate para não bloquear o event loop
             setImmediate(() => {
-                this.cleanupAndReconnect().catch(e => {
+            this.cleanupAndReconnect().catch(e => {
                     console.error('⚠️ Erro ao limpar e reconectar (bot continua funcionando):', e.message);
                     // Reseta flag para permitir nova tentativa
                     this.isRestarting = false;
-                });
+            });
             });
         } else if (shouldLogDetails && this.badMacErrorCount < this.badMacErrorThreshold - 1) {
             // Só mostra mensagem de limpeza automática quando próximo do limite (últimos 3 erros)
             if (this.badMacErrorCount >= this.badMacErrorThreshold - 3) {
-                console.error(`💡 Limpeza automática será acionada após ${this.badMacErrorThreshold - this.badMacErrorCount} erros adicionais`);
+            console.error(`💡 Limpeza automática será acionada após ${this.badMacErrorThreshold - this.badMacErrorCount} erros adicionais`);
             }
         }
     }
@@ -3252,7 +3456,7 @@ Digite o *número* da opção ou *8* para voltar ao menu.`;
             
             // Tenta reconectar - se falhar, tenta novamente SEMPRE
             try {
-                await this.start();
+            await this.start();
             } catch (startErr) {
                 console.error('⚠️ Erro ao reconectar após limpeza, tentando novamente em 10s:', startErr.message);
                 this.isRestarting = false;
@@ -3354,6 +3558,10 @@ Digite o *número* da opção ou *8* para voltar ao menu.`;
             if (this.keepAliveInterval) {
                 clearInterval(this.keepAliveInterval);
                 this.keepAliveInterval = null;
+            }
+            if (this.websocketHealthCheckInterval) {
+                clearInterval(this.websocketHealthCheckInterval);
+                this.websocketHealthCheckInterval = null;
             }
             
             if (this.sock?.ev) {

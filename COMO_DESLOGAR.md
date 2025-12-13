@@ -90,3 +90,4 @@ app.post('/api/session/logout', async (req, res) => {
 3. Escaneie o QR code com seu WhatsApp
 4. Pronto! Você está logado com uma nova sessão
 
+

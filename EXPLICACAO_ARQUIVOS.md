@@ -57,3 +57,4 @@ Isso mantém apenas `README.md` e `PRODUCTION.md`, removendo os outros.
 Seu bot já está otimizado! 🚀
 
 
+

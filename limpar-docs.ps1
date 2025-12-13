@@ -29,3 +29,4 @@ Write-Host "   Depois: $countAfter arquivos .md"
 Write-Host "   Removidos: $($countBefore - $countAfter) arquivos"
 
 
+

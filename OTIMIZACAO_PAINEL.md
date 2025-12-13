@@ -81,3 +81,4 @@ Se você precisar dessas funcionalidades no futuro, basta:
 4. ✅ **Heap usage reduzido** (~10-15% menos)
 
 
+

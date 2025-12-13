@@ -41,3 +41,4 @@ echo "   Depois: $COUNT_AFTER arquivos .md"
 echo "   Removidos: $((COUNT_BEFORE - COUNT_AFTER)) arquivos"
 
 
+

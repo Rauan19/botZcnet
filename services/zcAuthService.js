@@ -94,7 +94,7 @@ class ZcAuthService {
                     'Content-Type': 'application/json',
                     'X-Request-ID': this.xRequestId
                 },
-                timeout: 30000 // 30 segundos de timeout para requisições
+                timeout: 10000 // 10 segundos de timeout para requisições (reduzido para evitar travamento)
             };
 
             if (data) {

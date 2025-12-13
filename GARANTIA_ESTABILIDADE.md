@@ -88,3 +88,4 @@ A versão está **travada** e **estável**. Você só atualiza quando quiser, ap
 **Antes:** Manutenção constante, instabilidade  
 **Agora:** Estável por meses, sem surpresas ✅
 
+

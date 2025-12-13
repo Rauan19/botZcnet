@@ -132,3 +132,4 @@ chmod +x fix-pm2-heap.sh
 3. **Verifique sempre** com `pm2 describe` se está usando Node direto
 
 
+

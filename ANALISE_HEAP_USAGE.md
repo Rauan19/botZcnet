@@ -116,3 +116,4 @@ O `contextAnalyzer.js` inicializa NLP no constructor. Podemos fazer lazy loading
 Depois reinicie e verifique o heap usage deve cair para <5%!
 
 
+

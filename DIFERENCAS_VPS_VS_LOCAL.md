@@ -80,3 +80,4 @@ max_memory_restart: '2G', // Reinicia se passar de 2GB
 - Limpar arquivos temporários regularmente
 - Usar menos memória possível
 
+
