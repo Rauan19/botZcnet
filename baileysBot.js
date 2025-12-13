@@ -196,6 +196,12 @@ class BaileysBot {
         this.websocketHealthCheckInterval = null; // Interval para verificar saúde do WebSocket
         this.lastWebSocketResponse = Date.now(); // Timestamp da última resposta do WebSocket
         this.websocketZombieTimeout = 2 * 60 * 1000; // 2 minutos sem resposta = modo zumbi
+        
+        // Controle de erro 405 (rate limiting)
+        this.error405Count = 0; // Contador de erros 405 consecutivos
+        this.lastError405Time = 0; // Timestamp do último erro 405
+        this.error405MaxAttempts = 3; // Máximo de tentativas antes de limpar tokens
+        this.error405Cooldown = 2 * 60 * 60 * 1000; // 2 horas de cooldown após erro 405
         this.isRestarting = false; // Flag para evitar múltiplas tentativas de restart simultâneas
         this.restartTimeout = null; // Timeout do restart para poder cancelar
         this.lastConnectionError = null; // Último erro de conexão para debug
@@ -576,6 +582,15 @@ class BaileysBot {
                 
                 // Bot NÃO está conectado
                 const timeSinceLastConnection = now - this.lastSuccessfulConnection;
+                
+                // NÃO tenta reconectar se há erro 405 ativo (aguarda cooldown)
+                const timeSinceLast405 = now - this.lastError405Time;
+                const is405Active = this.error405Count > 0 && timeSinceLast405 < this.error405Cooldown;
+                
+                if (is405Active) {
+                    // Erro 405 ativo - não tenta reconectar, aguarda cooldown
+                    return;
+                }
                 
                 // Se passou mais de 5 minutos sem conexão, força reconexão
                 if (timeSinceLastConnection > this.maxTimeWithoutConnection) {
@@ -1410,12 +1425,40 @@ class BaileysBot {
                 
                 // Se não há credenciais válidas, limpa tokens automaticamente na primeira tentativa
                 const hasValidCredentials = this.sock?.user || (this.authState?.creds?.me && this.authState?.creds?.registered);
-                if (!hasValidCredentials && this.reconnectAttempts === 0) {
+                if (!hasValidCredentials) {
                     console.log(`\n🧹 Sem credenciais válidas detectadas. Limpando tokens para forçar novo QR...`);
                     try {
                         await this.cleanupAuthDir();
                         this.authState = null; // Limpa referência
-                        console.log(`✅ Tokens limpos. Próxima tentativa gerará novo QR code.`);
+                        this.error405Count = 0; // Reseta contador
+                        this.reconnectAttempts = 0;
+                        this.pauseRequested = false;
+                        console.log(`✅ Tokens limpos. Tentando gerar QR code em 10 segundos...`);
+                        
+                        // Fecha socket atual
+                        try {
+                            if (this.sock) {
+                                this.sock.end();
+                                this.sock = null;
+                            }
+                        } catch (e) {}
+                        
+                        // Para keepalive
+                        if (this.keepAliveInterval) {
+                            clearInterval(this.keepAliveInterval);
+                            this.keepAliveInterval = null;
+                        }
+                        
+                        // Aguarda 10 segundos e tenta gerar QR code
+                        setTimeout(() => {
+                            this.started = false; // Permite novo start
+                            console.log('🔄 Tentando gerar QR code após limpeza de tokens...');
+                            this.start().catch(err => {
+                                console.error('❌ Erro ao gerar QR code:', err.message);
+                            });
+                        }, 10000);
+                        
+                        return; // SAI AQUI - não aguarda 2 horas
                     } catch (e) {
                         console.log(`⚠️ Erro ao limpar tokens:`, e.message);
                     }
