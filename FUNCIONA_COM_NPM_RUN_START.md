@@ -91,3 +91,4 @@ Você pode continuar usando `npm run start:bot1` normalmente! O código já est�
 
 
 
+

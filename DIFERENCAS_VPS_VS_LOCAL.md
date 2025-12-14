@@ -81,3 +81,4 @@ max_memory_restart: '2G', // Reinicia se passar de 2GB
 - Usar menos memória possível
 
 
+

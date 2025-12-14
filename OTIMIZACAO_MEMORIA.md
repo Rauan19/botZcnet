@@ -151,3 +151,4 @@ Com `WHATSAPP_PROVIDER=baileys`, apenas o Baileys é carregado, economizando **~
 
 
 
+

@@ -30,3 +30,4 @@ Write-Host "   Removidos: $($countBefore - $countAfter) arquivos"
 
 
 
+

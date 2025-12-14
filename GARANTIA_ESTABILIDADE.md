@@ -89,3 +89,4 @@ A versão está **travada** e **estável**. Você só atualiza quando quiser, ap
 **Agora:** Estável por meses, sem surpresas ✅
 
 
+

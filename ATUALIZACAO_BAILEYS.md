@@ -44,3 +44,4 @@ A API `fetchLatestBaileysVersion()` ainda retorna:
 A versão `7.0.0-rc.9` é uma **release candidate**, mas é a versão mais estável disponível e resolve muitos problemas conhecidos da versão 6.7.21.
 
 
+

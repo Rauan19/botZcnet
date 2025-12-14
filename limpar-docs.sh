@@ -42,3 +42,4 @@ echo "   Removidos: $((COUNT_BEFORE - COUNT_AFTER)) arquivos"
 
 
 
+

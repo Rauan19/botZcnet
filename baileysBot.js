@@ -1406,9 +1406,46 @@ class BaileysBot {
                 if (!hasValidCredentials) {
                     console.log(`\n⚠️ Erro 405 detectado, mas SEM credenciais válidas`);
                     console.log(`💡 IGNORANDO erro 405 - continuando para gerar QR code normalmente...`);
-                    // NÃO retorna - deixa o código continuar normalmente para gerar QR code
-                    // O erro 405 será ignorado e o QR code será gerado
-                    return; // Sai do handleConnectionUpdate mas não impede geração de QR
+                    // IMPORTANTE: Não fecha o socket nem impede que o QR seja gerado
+                    // Marca como desconectado e tenta iniciar novamente para gerar QR
+                    this.started = false; // Permite novo start para gerar QR
+                    this.pauseRequested = false; // Garante que pode reconectar
+                    
+                    // Fecha socket anterior se existir (para permitir nova conexão)
+                    try {
+                        if (this.sock) {
+                            this.sock.end();
+                            this.sock = null;
+                        }
+                    } catch (e) {
+                        // Ignora erros ao fechar socket
+                    }
+                    
+                    // Para keepalive se estiver ativo
+                    if (this.keepAliveInterval) {
+                        clearInterval(this.keepAliveInterval);
+                        this.keepAliveInterval = null;
+                    }
+                    
+                    // Tenta iniciar novamente após um pequeno delay para gerar QR code
+                    console.log(`🔄 Tentando gerar QR code novamente em 5 segundos...`);
+                    setTimeout(() => {
+                        if (!this.started && !this.pauseRequested) {
+                            console.log(`🔄 Iniciando conexão para gerar QR code...`);
+                            this.start().catch(err => {
+                                console.error('❌ Erro ao tentar gerar QR code:', err.message);
+                                // Se falhar, tenta novamente após 30 segundos
+                                setTimeout(() => {
+                                    if (!this.started && !this.pauseRequested) {
+                                        console.log(`🔄 Segunda tentativa de gerar QR code...`);
+                                        this.start().catch(e => console.error('❌ Falha na segunda tentativa:', e.message));
+                                    }
+                                }, 30000);
+                            });
+                        }
+                    }, 5000); // Aguarda 5 segundos antes de tentar novamente
+                    
+                    return; // Sai do handleConnectionUpdate
                 }
                 
                 // Se TEM credenciais, processa erro 405 normalmente
